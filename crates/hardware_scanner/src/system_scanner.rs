@@ -4,11 +4,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::hardware_info::{
+use crate::{
     ScanError,
     gpu_scanner::{GpuProcess, GpuResult, NvidiaScanner},
+    model::{Bytes, Degree, Percent, safe_div},
     sensor_table::{self, HwmonRule, MAX_VALID_C, MIN_VALID_C, TargetRules},
-    values::{Bytes, Degree, Percent, safe_div},
 };
 
 pub type CpuRamResult<T = ()> = Result<T, sysinfo::Error>;
@@ -83,29 +83,21 @@ impl SystemScanner {
         gpus: Option<&HashMap<sysinfo::Pid, GpuProcess>>,
     ) -> super::Process {
         let pid = process.pid();
-        let name = process
-            .exe()
-            .map(|e| e.as_os_str())
-            .unwrap_or(process.name())
-            .into();
+        let name = process.exe().unwrap_or(Path::new(process.name())).into();
 
         let memory = Bytes::new(process.memory());
         let cpu_usage = Percent::new(safe_div(process.cpu_usage(), self.cpu_count() as f32));
 
-        let gpu_number = gpus.map(|g| g.get(&pid).map(|p| p.gpu_numbers)).flatten();
-        let gpu_usage = None;
-        let gpu_memory = gpus
-            .map(|g| g.get(&pid).map(|p| p.memory_usage))
-            .flatten()
-            .flatten();
+        let gpu = gpus.map(|g| g.get(&pid)).flatten();
+        let gpu_number = gpu.map(|g| g.gpu_numbers);
+        let gpu_memory = gpu.map(|g| g.memory_usage).flatten();
 
         super::Process {
             pid,
             name,
-            cpu_usage,
             memory,
+            cpu_usage,
             gpu_number,
-            gpu_usage,
             gpu_memory,
         }
     }

@@ -1,16 +1,13 @@
 use std::collections::HashMap;
 
 use nvml_wrapper::{
-    Device, Nvml,
-    enum_wrappers::device::TemperatureSensor,
-    enums::device::UsedGpuMemory,
-    error::NvmlError,
-    struct_wrappers::device::{ProcessInfo, ProcessUtilizationSample},
+    Device, Nvml, enum_wrappers::device::TemperatureSensor, enums::device::UsedGpuMemory,
+    error::NvmlError, struct_wrappers::device::ProcessInfo,
 };
 
-use crate::hardware_info::{
+use crate::{
     ScanError,
-    values::{Bytes, Degree, GpuNumbers, Percent},
+    model::{Bytes, Degree, GpuNumbers, Percent},
 };
 
 pub type GpuResult<T = ()> = Result<T, NvmlError>;
@@ -18,7 +15,6 @@ pub type GpuResult<T = ()> = Result<T, NvmlError>;
 pub struct GpuProcess {
     pub pid: sysinfo::Pid,
     pub gpu_numbers: GpuNumbers,
-    pub gpu_usage: Option<Percent>,
     pub memory_usage: Option<Bytes>,
 }
 
@@ -53,15 +49,10 @@ impl NvidiaScanner {
 
         for gpu_number in 0..self.gpu_count()? {
             let device = self.get_gpu(gpu_number as u32)?;
-            let stats_result = device.process_utilization_stats(None);
             let compute_result = device.running_compute_processes();
             let graphics_result = device.running_graphics_processes();
 
             if let Err(err) = self.memory_process(gpu_number, compute_result, graphics_result) {
-                errors.push(err.into());
-            }
-
-            if let Err(err) = self.usage_process(stats_result) {
                 errors.push(err.into());
             }
         }
@@ -84,20 +75,6 @@ impl NvidiaScanner {
             match self.processes.get_mut(&pid) {
                 Some(old_process) => old_process.combine(process),
                 None => _ = self.processes.insert(pid, process),
-            }
-        }
-        Ok(())
-    }
-
-    pub fn usage_process<'a>(
-        &mut self,
-        stats: GpuResult<Vec<ProcessUtilizationSample>>,
-    ) -> GpuResult {
-        for stat in stats? {
-            let pid = sysinfo::Pid::from_u32(stat.pid);
-            let usage = Percent::new(stat.sm_util as f32);
-            if let Some(process) = self.processes.get_mut(&pid) {
-                process.gpu_usage = Some(usage)
             }
         }
         Ok(())
@@ -159,7 +136,6 @@ fn to_gpu_process_entry(process: ProcessInfo, gpu_number: usize) -> (sysinfo::Pi
         GpuProcess {
             pid,
             memory_usage,
-            gpu_usage: None,
             gpu_numbers: GpuNumbers::from_index(gpu_number),
         },
     )

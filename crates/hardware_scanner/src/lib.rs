@@ -1,60 +1,73 @@
-use std::{ffi::OsStr, time::Duration};
+use std::time::Duration;
 
-use nvml_wrapper::error::NvmlError;
-use thiserror::Error;
-
-use crate::hardware_info::{
+use crate::{
     gpu_scanner::NvidiaScanner,
+    model::{CpuInfo, GpuInfo, Percent, Process, RamInfo, ScanError, ScanResult, safe_div},
     system_scanner::SystemScanner,
-    values::{Bytes, Degree, GpuNumbers, Percent, safe_div},
 };
 
 mod gpu_scanner;
+pub mod model;
 mod sensor_table;
 mod system_scanner;
-pub mod values;
-
-type SysResult<T = ()> = Result<T, ScanError>;
-
-#[derive(Debug, Error)]
-pub enum ScanError {
-    #[error("{0}")]
-    Sysinfo(#[from] sysinfo::Error),
-    #[error("{0}")]
-    Gpu(#[from] NvmlError),
-}
-
-#[derive(Debug, Default)]
-pub struct CpuInfo {
-    pub core_usage: Vec<Percent>,
-    pub temperature: Option<Degree>,
-    pub total_usage: Option<Percent>,
-}
-
-#[derive(Debug, Default)]
-pub struct RamInfo {
-    pub used: Option<Bytes>,
-    pub total: Option<Bytes>,
-    pub temperature: Option<Degree>,
-}
-
-#[derive(Debug, Default)]
-pub struct GpuInfo {
-    pub gpu: Option<Percent>,
-    pub memory_usage: Option<Percent>,
-    pub memory_total: Option<Bytes>,
-    pub temperature: Option<Degree>,
-}
 
 #[derive(Debug)]
-pub struct Process {
-    pub pid: sysinfo::Pid,
-    pub memory: Bytes,
-    pub name: Box<OsStr>,
-    pub cpu_usage: Percent,
-    pub gpu_memory: Option<Bytes>,
-    pub gpu_usage: Option<Percent>,
-    pub gpu_number: Option<GpuNumbers>,
+pub struct HardwareInfo {
+    cpu: CpuInfo,
+    ram: RamInfo,
+    processes: Vec<Process>,
+    gpus: Vec<Option<GpuInfo>>,
+    errors: Vec<ScanError>,
+}
+impl HardwareInfo {
+    fn new() -> Self {
+        Self {
+            ram: RamInfo::default(),
+            cpu: CpuInfo::default(),
+            gpus: vec![],
+            errors: vec![],
+            processes: vec![],
+        }
+    }
+
+    pub fn cpu(&self) -> &CpuInfo {
+        &self.cpu
+    }
+
+    pub fn ram(&self) -> &RamInfo {
+        &self.ram
+    }
+
+    pub fn gpus(&self) -> &[Option<GpuInfo>] {
+        &self.gpus
+    }
+
+    pub fn processes(&self) -> &[Process] {
+        &self.processes
+    }
+
+    pub fn errors(&self) -> &[ScanError] {
+        &self.errors
+    }
+
+    pub fn take_errors(&mut self) -> Vec<ScanError> {
+        std::mem::take(&mut self.errors)
+    }
+
+    fn clear(&mut self) {
+        self.gpus.clear();
+        self.errors.clear();
+        self.processes.clear();
+        self.cpu.core_usage.clear();
+        self.cpu.temperature = None;
+        self.cpu.total_usage = None;
+        self.ram = RamInfo::default();
+    }
+}
+impl Default for HardwareInfo {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub struct Hardwarescanner {
@@ -62,7 +75,7 @@ pub struct Hardwarescanner {
     gpus: Option<NvidiaScanner>,
 }
 impl Hardwarescanner {
-    pub fn new() -> SysResult<Self> {
+    pub fn new() -> ScanResult<Self> {
         Ok(Self {
             gpus: None,
             cpu_rams: SystemScanner::new()?,
@@ -156,55 +169,5 @@ impl Hardwarescanner {
             }
         };
         self.gpus = Some(nvidia);
-    }
-}
-
-#[derive(Debug)]
-pub struct HardwareInfo {
-    cpu: CpuInfo,
-    ram: RamInfo,
-    processes: Vec<Process>,
-    gpus: Vec<Option<GpuInfo>>,
-    errors: Vec<ScanError>,
-}
-impl HardwareInfo {
-    pub fn cpu(&self) -> &CpuInfo {
-        &self.cpu
-    }
-
-    pub fn ram(&self) -> &RamInfo {
-        &self.ram
-    }
-
-    pub fn gpus(&self) -> &[Option<GpuInfo>] {
-        &self.gpus
-    }
-
-    pub fn processes(&self) -> &[Process] {
-        &self.processes
-    }
-
-    pub fn errors(&self) -> &[ScanError] {
-        &self.errors
-    }
-
-    fn new() -> Self {
-        Self {
-            ram: RamInfo::default(),
-            cpu: CpuInfo::default(),
-            gpus: vec![],
-            errors: vec![],
-            processes: vec![],
-        }
-    }
-
-    fn clear(&mut self) {
-        self.gpus.clear();
-        self.errors.clear();
-        self.processes.clear();
-        self.cpu.core_usage.clear();
-        self.cpu.temperature = None;
-        self.cpu.total_usage = None;
-        self.ram = RamInfo::default();
     }
 }

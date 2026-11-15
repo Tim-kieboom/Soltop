@@ -5,6 +5,5 @@ edition = "2024"
 
 [dependencies]
 eframe = "0.37.0"
-nvml-wrapper = "0.13.0"
-sysinfo = "0.40.3"
 thiserror = "2.0.21"
+hardware_scanner = {path = "./crates/hardware_scanner"}

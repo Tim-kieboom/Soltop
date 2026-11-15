@@ -1,54 +1,41 @@
+use std::{thread, time::Duration};
+
+use crate::scan_thread::ScannerThread;
 use eframe::egui::{self, Vec2, vec2};
-use sysinfo::{Components, System};
 
-use crate::hardware_info::Hardwarescanner;
-
-mod hardware_info;
-
+const SCAN_INTERVAL: Duration = Duration::from_secs(2);
 const VIEW_PORT_INNER_SIZE: Vec2 = vec2(300.0, 160.0);
 
-fn main() -> eframe::Result {
-    run()
-}
+mod error;
+mod scan_thread;
 
-fn run() -> eframe::Result {
-    // eframe::run_native(
-    //     "Counter",
-    //     options(),
-    //     Box::new(|_context| Ok(App::new_box())),
-    // )
-
-    // let mut system = System::new_all().unwrap();
-    // system.refresh_all();
-
-    // for cpu in system.cpus() {
-    //     println!("Core {}: {}%", cpu.name(), cpu.usage())
-    // }
-
-    // println!(
-    //     "RAM: {} / {} bytes",
-    //     bytes_to_gigabytes(system.used_memory()),
-    //     bytes_to_gigabytes(system.total_memory())
-    // );
-
-    // let components = Components::new_with_refreshed_list().unwrap();
-    // for c in &components {
-    //     if let Some(temp) = c.temperature() {
-    //         println!("{}: {:.1}°C", c.label(), temp);
-    //     }
-    // }
-
-    let mut scanner = Hardwarescanner::new().unwrap();
-    let mut gpu_error = None;
-    let info = scanner.initinalize(&mut gpu_error);
-    println!("{:#?}\n\n", info.processes());
-    println!(
-        "{:#?}\n\n",
-        info.processes().iter().find(|p| p.gpu_memory.is_some())
+fn main() {
+    let mut ctx = egui::Context::default();
+    let result = eframe::run_native(
+        "Counter",
+        options(),
+        Box::new(|context| {
+            ctx = context.egui_ctx.clone();
+            Ok(App::new_box())
+        }),
     );
-    println!("{:#?}\n\n", info.errors());
 
-    Ok(())
+    if let Err(err) = result {
+        eprintln!("{err}");
+        return;
+    }
+
+    println!("starting scannerThread...");
+    let scanner = ScannerThread::spawn(SCAN_INTERVAL, move || ctx.request_repaint());
+    let recieve_interval = SCAN_INTERVAL.div_f32(2.0);
+    loop {
+        match scanner.recieve() {
+            Ok(None) => (),
+            Ok(Some(_)) => println!("message"),
+            Err(err) => eprintln!("{err}"),
+        }
+        thread::sleep(recieve_interval);
+    }
 }
 
 fn options() -> eframe::NativeOptions {
@@ -71,14 +58,17 @@ struct Task {
 
 impl App {
     pub fn new_box() -> Box<Self> {
-        Box::new(Self {
+        Box::new(Self::new())
+    }
+    pub fn new() -> Self {
+        Self {
             tasks: vec![],
             new_task: String::new(),
-        })
+        }
     }
 }
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.text_edit_singleline(&mut self.new_task);

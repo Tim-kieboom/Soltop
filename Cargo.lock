@@ -7,8 +7,7 @@ name = "Soltop"
 version = "0.1.0"
 dependencies = [
  "eframe",
- "nvml-wrapper",
- "sysinfo",
+ "hardware_scanner",
  "thiserror 2.0.21",
 ]
 
@@ -1437,6 +1436,15 @@ dependencies = [
  "crunchy",
  "num-traits",
  "zerocopy",
+]
+
+[[package]]
+name = "hardware_scanner"
+version = "0.1.0"
+dependencies = [
+ "nvml-wrapper",
+ "sysinfo",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

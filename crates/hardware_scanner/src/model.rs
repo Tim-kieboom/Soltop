@@ -1,3 +1,8 @@
+use std::{fmt::Debug, path::Path};
+
+use nvml_wrapper::error::NvmlError;
+use thiserror::Error;
+
 macro_rules! newtype {
     ($(#[$meta:meta])* $vis:vis struct $name:ident($ty:ty) { $as:ident }) => {
         $(#[$meta])*
@@ -34,7 +39,49 @@ newtype!(
     pub struct Percent(f32) { as_f32 }
 );
 
-#[derive(Debug, Clone, Copy, Default)]
+pub type ScanResult<T = ()> = Result<T, ScanError>;
+
+#[derive(Debug, Error)]
+pub enum ScanError {
+    #[error("sysinfo error: {0}")]
+    Sysinfo(#[from] sysinfo::Error),
+    #[error("gpu error: {0}")]
+    Gpu(#[from] NvmlError),
+}
+
+#[derive(Debug, Default)]
+pub struct CpuInfo {
+    pub core_usage: Vec<Percent>,
+    pub temperature: Option<Degree>,
+    pub total_usage: Option<Percent>,
+}
+
+#[derive(Debug, Default)]
+pub struct RamInfo {
+    pub used: Option<Bytes>,
+    pub total: Option<Bytes>,
+    pub temperature: Option<Degree>,
+}
+
+#[derive(Debug, Default)]
+pub struct GpuInfo {
+    pub gpu: Option<Percent>,
+    pub memory_usage: Option<Percent>,
+    pub memory_total: Option<Bytes>,
+    pub temperature: Option<Degree>,
+}
+
+#[derive(Debug)]
+pub struct Process {
+    pub pid: sysinfo::Pid,
+    pub memory: Bytes,
+    pub name: Box<Path>,
+    pub cpu_usage: Percent,
+    pub gpu_memory: Option<Bytes>,
+    pub gpu_number: Option<GpuNumbers>,
+}
+
+#[derive(Clone, Copy, Default)]
 pub struct GpuNumbers(u64);
 impl GpuNumbers {
     pub fn from_index(i: usize) -> Self {
@@ -79,6 +126,11 @@ impl GpuNumbers {
                 Some(idx)
             }
         })
+    }
+}
+impl Debug for GpuNumbers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
     }
 }
 
