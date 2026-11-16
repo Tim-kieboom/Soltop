@@ -1,3 +1,5 @@
+//! The window: a sidebar with the tabs, and whichever tab is selected.
+
 use std::fmt::Display;
 
 use eframe::egui;
@@ -7,6 +9,7 @@ use crate::scan_thread::{Message, ScannerThread};
 
 mod tabs;
 
+/// The tabs in the sidebar.
 #[derive(PartialEq, Clone, Copy, Default)]
 enum Tab {
     #[default]
@@ -15,6 +18,7 @@ enum Tab {
     System,
 }
 
+/// The application state: the scan thread's receiver, the latest scan, and one view per tab.
 pub struct App {
     tab: Tab,
     scanner: ScannerThread,
@@ -42,9 +46,11 @@ impl eframe::App for App {
     }
 }
 impl App {
+    /// For eframe, which wants the app boxed.
     pub fn new_box(scanner: ScannerThread) -> Box<Self> {
         Box::new(Self::new(scanner))
     }
+    /// Starts on the Processes tab with no data; the first scan arrives a moment later.
     pub fn new(scanner: ScannerThread) -> Self {
         Self {
             scanner,
@@ -58,6 +64,7 @@ impl App {
         }
     }
 
+    /// The sidebar: tab buttons and a live CPU and RAM readout.
     fn menu_ui(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
         ui.vertical(|ui| {
@@ -79,6 +86,7 @@ impl App {
         }
     }
 
+    /// Shows a fatal scanner error in red and the "no GPU" note in amber above the tab.
     fn notices_ui(&self, ui: &mut egui::Ui) {
         if let Some(fatal) = &self.fatal {
             ui.colored_label(ui.visuals().error_fg_color, format!("Error: {fatal}"));
@@ -91,6 +99,7 @@ impl App {
         }
     }
 
+    /// The Processes tab, or a spinner until the first scan.
     fn processes_ui(&mut self, ui: &mut egui::Ui) {
         let Some(info) = &mut self.info else {
             ui.spinner();
@@ -101,6 +110,7 @@ impl App {
         self.process_view.ui(info, ui);
     }
 
+    /// The System tab, or a spinner until the first scan.
     fn system_ui(&mut self, ui: &mut egui::Ui) {
         let Some(info) = &self.info else {
             ui.spinner();
@@ -111,6 +121,7 @@ impl App {
         self.system_view.ui(info, ui);
     }
 
+    /// The Performance tab, or a spinner until the first scan.
     fn performance_ui(&mut self, ui: &mut egui::Ui) {
         let Some(info) = &self.info else {
             ui.spinner();
@@ -121,12 +132,14 @@ impl App {
         self.performance_view.ui(info, ui);
     }
 
+    /// Sorts the new scan, records it in the graphs and makes it the current one.
     fn load_new_info(&mut self, mut info: HardwareInfo) {
         self.process_view.sort_process(&mut info);
         self.performance_view.push(&info);
         self.info = Some(info)
     }
 
+    /// Reads every message the scan thread has queued. Called once per frame.
     fn recieve_scan(&mut self) {
         loop {
             let message = match self.scanner.recieve() {
@@ -162,6 +175,23 @@ impl App {
     }
 }
 
+/// An error (or anything displayable) as a boxed string, to keep in the app state.
 fn box_str(err: impl Display) -> Box<str> {
     err.to_string().into_boxed_str()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn box_str_keeps_the_message() {
+        assert_eq!(&*box_str("scanner failed"), "scanner failed");
+        assert_eq!(&*box_str(42), "42");
+    }
+
+    #[test]
+    fn the_app_opens_on_the_processes_tab() {
+        assert!(Tab::default() == Tab::Processes);
+    }
 }

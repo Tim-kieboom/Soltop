@@ -1,3 +1,5 @@
+//! The System tab: host, OS, load and battery.
+
 use eframe::egui;
 use hardware_scanner::{
     HardwareInfo,
@@ -59,6 +61,7 @@ impl SystemView {
     }
 }
 
+/// The battery section: charge bar, state, power and time remaining.
 fn battery_ui(ui: &mut egui::Ui, battery: BatteryInfo) {
     let percent = battery.percent.as_f32();
     section_header(ui, "Battery", &format!("{percent:.0}%"));
@@ -87,15 +90,48 @@ fn battery_ui(ui: &mut egui::Ui, battery: BatteryInfo) {
     );
 }
 
+/// "2h 05m".
 fn battery_time(time: std::time::Duration) -> String {
     let minutes = time.as_secs() / 60;
     format!("{}h {:02}m", minutes / 60, minutes % 60)
 }
 
+/// The text itself, or `???` when it is empty.
 fn text_or_unknown(text: &str) -> String {
     if text.is_empty() {
         "???".to_string()
     } else {
         text.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn battery_time_is_hours_and_zero_padded_minutes() {
+        assert_eq!(battery_time(Duration::from_secs(0)), "0h 00m");
+        assert_eq!(battery_time(Duration::from_secs(5 * 60)), "0h 05m");
+        assert_eq!(battery_time(Duration::from_secs(7_260)), "2h 01m");
+        assert_eq!(battery_time(Duration::from_secs(10 * 3_600 + 59 * 60)), "10h 59m");
+    }
+
+    #[test]
+    fn battery_time_drops_the_leftover_seconds() {
+        assert_eq!(battery_time(Duration::from_secs(119)), "0h 01m");
+    }
+
+    #[test]
+    fn empty_facts_show_as_unknown() {
+        assert_eq!(text_or_unknown(""), "???");
+        assert_eq!(text_or_unknown("6.12.4"), "6.12.4");
+    }
+
+    #[test]
+    fn a_new_view_has_no_facts_yet() {
+        assert!(SystemView::new().facts.hostname.is_empty());
     }
 }

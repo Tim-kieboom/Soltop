@@ -14,6 +14,7 @@ use crate::{
 const SYS_NET: &str = "/sys/class/net";
 const PROC_WIRELESS: &str = "/proc/net/wireless";
 
+/// Reads physical network interfaces through sysinfo and /proc/net/wireless.
 pub struct NetScanner {
     /// Physical interfaces found at startup; interfaces added later are not picked up.
     ids: Vec<Box<str>>,
@@ -23,6 +24,7 @@ pub struct NetScanner {
     last_scan: Option<Instant>,
 }
 impl NetScanner {
+    /// Finds the physical interfaces present right now.
     pub fn new() -> Self {
         let networks = sysinfo::Networks::new_with_refreshed_list().ok();
         Self {
@@ -33,6 +35,7 @@ impl NetScanner {
         }
     }
 
+    /// Type and MAC address of every interface found at startup, in the same order as [`scan`](Self::scan).
     pub fn static_infos(&self) -> Vec<NetStatic> {
         self.ids
             .iter()

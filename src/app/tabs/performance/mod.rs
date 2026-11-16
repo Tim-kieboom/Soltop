@@ -1,3 +1,6 @@
+//! The Performance tab: a list of devices (CPU, memory, disks, network, GPUs) with a mini
+//! graph each, and a detail view with big graphs and tiles for the selected one.
+
 use eframe::egui::{self, Align2, Color32, FontId, Mesh, Pos2, Rect, Sense, Shape, Stroke};
 use hardware_scanner::{
     HardwareInfo,
@@ -19,10 +22,13 @@ const VOLUME_EMPTY_COLOR: Color32 = Color32::from_gray(58);
 /// How many of the newest samples the mini graphs in the device list show.
 const MINI_POINTS: usize = 60;
 
+/// Narrowest a per-core tile may get before the grid drops a column.
 const CORE_TILE_MIN_WIDTH: f32 = 130.0;
 const CORE_TILE_HEIGHT: f32 = 56.0;
 const CORE_TILE_SPACING: f32 = 8.0;
 
+/// An entry in the device list. The number is the index into the matching list of
+/// [`HardwareInfo`] (`gpus()`, `disks()` or `nets()`).
 #[derive(Clone, Copy, PartialEq, Default)]
 enum Device {
     #[default]
@@ -33,6 +39,7 @@ enum Device {
     Gpu(usize),
 }
 
+/// Graph data for one disk.
 struct DiskHistory {
     active: History<Percent>,
     read: History<Bytes>,
@@ -49,6 +56,7 @@ impl DiskHistory {
     }
 }
 
+/// Graph data for one network interface.
 struct NetHistory {
     receive: History<Bytes>,
     send: History<Bytes>,
@@ -63,6 +71,7 @@ impl NetHistory {
     }
 }
 
+/// Graph data for one GPU.
 struct GpuHistory {
     load: History<Percent>,
     memory: History<Percent>,
@@ -85,6 +94,8 @@ struct Card {
     max: f64,
 }
 
+/// The Performance tab. Keeps a history per device so the graphs have something to draw, and
+/// the static facts that the detail views show next to the live numbers.
 pub struct PerformanceView {
     selected: Device,
     static_info: StaticInfo,
@@ -96,6 +107,7 @@ pub struct PerformanceView {
     net_histories: Vec<NetHistory>,
 }
 impl PerformanceView {
+    /// Starts on the CPU, with empty histories.
     pub fn new() -> Self {
         Self {
             selected: Device::default(),
@@ -175,6 +187,7 @@ impl PerformanceView {
         }
     }
 
+    /// Draws the device list on the left and the selected device's details on the right.
     pub fn ui(&mut self, info: &HardwareInfo, ui: &mut egui::Ui) {
         egui::Panel::left("perf_devices")
             .resizable(false)
@@ -200,6 +213,7 @@ impl PerformanceView {
         }
     }
 
+    /// The device list; clicking an entry selects it.
     fn list_ui(&mut self, info: &HardwareInfo, ui: &mut egui::Ui) {
         ui.add_space(4.0);
         let selected = self.selected_device(info);
@@ -223,6 +237,7 @@ impl PerformanceView {
         }
     }
 
+    /// The title, value and mini-graph data of one device-list entry.
     fn card(&self, info: &HardwareInfo, device: Device) -> Card {
         match device {
             Device::Cpu => Card {
@@ -312,6 +327,7 @@ impl PerformanceView {
         }
     }
 
+    /// CPU detail: graph, live and static tiles, cache sizes and per-core tiles.
     fn cpu_ui(&self, info: &HardwareInfo, ui: &mut egui::Ui) {
         let cpu = info.cpu();
         let facts = &self.static_info.cpu;
@@ -390,6 +406,7 @@ impl PerformanceView {
         }
     }
 
+    /// Memory detail: graph, usage tiles and swap.
     fn ram_ui(&self, info: &HardwareInfo, ui: &mut egui::Ui) {
         let ram = info.ram();
         let used = ram.used.unwrap_or_default();
@@ -432,6 +449,7 @@ impl PerformanceView {
         self.static_info.disks.iter().find(|facts| facts.id == *id)
     }
 
+    /// Disk detail: active-time, read and write graphs, tiles and a usage bar per volume.
     fn disk_ui(&self, info: &HardwareInfo, index: usize, ui: &mut egui::Ui) {
         let Some(disk) = info.disks().get(index) else {
             return;
@@ -516,6 +534,7 @@ impl PerformanceView {
         }
     }
 
+    /// The static facts of the interface at `index`, matched by id.
     fn net_static(&self, info: &HardwareInfo, index: usize) -> Option<&hardware_scanner::model::NetStatic> {
         let id = &info.nets().get(index)?.id;
         self.static_info.nets.iter().find(|facts| facts.id == *id)
@@ -530,6 +549,7 @@ impl PerformanceView {
         }
     }
 
+    /// Network detail: receive and send graphs, tiles, MAC and IP addresses.
     fn net_ui(&self, info: &HardwareInfo, index: usize, ui: &mut egui::Ui) {
         let Some(net) = info.nets().get(index) else {
             return;
@@ -589,6 +609,7 @@ impl PerformanceView {
         }
     }
 
+    /// GPU detail: load and memory graphs, then tiles for temperature, power, clocks and PCIe.
     fn gpu_ui(&self, info: &HardwareInfo, index: usize, ui: &mut egui::Ui) {
         let Some(Some(gpu)) = info.gpus().get(index) else {
             return;
@@ -692,6 +713,7 @@ fn rate_short(rate: Bytes) -> String {
     }
 }
 
+/// "NVMe", "SSD" or "HDD"; empty when the type is unknown.
 fn kind_text(kind: DiskKind) -> &'static str {
     match kind {
         DiskKind::Nvme => "NVMe",
@@ -725,10 +747,12 @@ fn rate_text(rate: Bytes) -> String {
     }
 }
 
+/// Decimal gigabytes with one digit, or `???` when unknown.
 fn gb_text(size: Option<Bytes>) -> String {
     size.map_or("???".into(), |size| format!("{:.1} GB", size.to_gb(1).as_f32()))
 }
 
+/// "1.0 GB / 8.0 GB", "None" when no swap is configured, `???` when unknown.
 fn swap_text(used: Option<Bytes>, total: Option<Bytes>) -> String {
     match (used, total) {
         (_, Some(total)) if total.as_u64() == 0 => "None".into(),
@@ -737,10 +761,12 @@ fn swap_text(used: Option<Bytes>, total: Option<Bytes>) -> String {
     }
 }
 
+/// "1800 MHz".
 fn mhz_text(clock: Mhz) -> String {
     format!("{} MHz", clock.as_u64())
 }
 
+/// "85 / 320 W" with a limit, "85 W" without, `???` when there is no reading.
 fn power_text(power: Option<Watts>, limit: Option<Watts>) -> String {
     match (power, limit) {
         (Some(power), Some(limit)) => format!("{:.0} / {:.0} W", power.as_f32(), limit.as_f32()),
@@ -749,6 +775,7 @@ fn power_text(power: Option<Watts>, limit: Option<Watts>) -> String {
     }
 }
 
+/// "Gen 4 x16", or `???` when either part is unknown.
 fn pcie_text(generation: Option<u32>, width: Option<u32>) -> String {
     match (generation, width) {
         (Some(generation), Some(width)) => format!("Gen {generation} x{width}"),
@@ -756,6 +783,7 @@ fn pcie_text(generation: Option<u32>, width: Option<u32>) -> String {
     }
 }
 
+/// A clock as "3.40 GHz".
 fn ghz_text(clock: Mhz) -> String {
     format!("{:.2} GHz", clock.as_u64() as f32 / 1000.0)
 }
@@ -785,6 +813,7 @@ pub(super) fn uptime_text(uptime: std::time::Duration) -> String {
     )
 }
 
+/// "37%", or `???%` when unknown.
 fn percent_text(usage: Option<Percent>) -> String {
     usage.map_or("???%".into(), |usage| format!("{:.0}%", usage.as_f32()))
 }
@@ -923,4 +952,116 @@ fn paint_sparkline(painter: &egui::Painter, rect: Rect, values: &[f64], max: f64
     }
     painter.add(Shape::mesh(mesh));
     painter.add(Shape::line(points, Stroke::new(1.0, color)));
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn link_speed_switches_to_gbps_at_one_gigabit() {
+        assert_eq!(link_speed_text(0), "0 Mbps");
+        assert_eq!(link_speed_text(100_000_000), "100 Mbps");
+        assert_eq!(link_speed_text(866_700_000), "867 Mbps");
+        assert_eq!(link_speed_text(1_000_000_000), "1.0 Gbps");
+        assert_eq!(link_speed_text(2_500_000_000), "2.5 Gbps");
+    }
+
+    #[test]
+    fn rate_short_is_compact() {
+        assert_eq!(rate_short(Bytes::new(0)), "0");
+        assert_eq!(rate_short(Bytes::new(999)), "999");
+        assert_eq!(rate_short(Bytes::new(812_000)), "812K");
+        assert_eq!(rate_short(Bytes::new(3_400_000)), "3.4M");
+    }
+
+    #[test]
+    fn rate_text_picks_the_unit() {
+        assert_eq!(rate_text(Bytes::new(0)), "0 B/s");
+        assert_eq!(rate_text(Bytes::new(12_000)), "12 KB/s");
+        assert_eq!(rate_text(Bytes::new(12_300_000)), "12.3 MB/s");
+        assert_eq!(rate_text(Bytes::new(2_000_000_000)), "2.0 GB/s");
+    }
+
+    #[test]
+    fn capacity_uses_decimal_units() {
+        assert_eq!(capacity_text(Bytes::new(0)), "0.0 GB");
+        assert_eq!(capacity_text(Bytes::new(500_107_862_016)), "500.1 GB");
+        assert_eq!(capacity_text(Bytes::new(999_000_000_000)), "999.0 GB");
+        assert_eq!(capacity_text(Bytes::new(2_000_000_000_000)), "2.0 TB");
+    }
+
+    #[test]
+    fn disk_kinds_have_names_except_unknown() {
+        assert_eq!(kind_text(DiskKind::Nvme), "NVMe");
+        assert_eq!(kind_text(DiskKind::Ssd), "SSD");
+        assert_eq!(kind_text(DiskKind::Hdd), "HDD");
+        assert_eq!(kind_text(DiskKind::Unknown), "");
+    }
+
+    #[test]
+    fn gb_text_marks_unknown_sizes() {
+        assert_eq!(gb_text(None), "???");
+        assert_eq!(gb_text(Some(Bytes::new(1_500_000_000))), "1.5 GB");
+    }
+
+    #[test]
+    fn swap_text_distinguishes_no_swap_from_unknown() {
+        let gb = |n: u64| Some(Bytes::new(n * 1_000_000_000));
+        assert_eq!(swap_text(gb(1), gb(2)), "1.0 GB / 2.0 GB");
+        assert_eq!(swap_text(gb(0), gb(0)), "None");
+        assert_eq!(swap_text(None, gb(0)), "None");
+        assert_eq!(swap_text(None, None), "???");
+        assert_eq!(swap_text(gb(1), None), "???");
+    }
+
+    #[test]
+    fn mhz_and_ghz_text() {
+        assert_eq!(mhz_text(Mhz::new(1800)), "1800 MHz");
+        assert_eq!(ghz_text(Mhz::new(3400)), "3.40 GHz");
+        assert_eq!(ghz_text(Mhz::new(800)), "0.80 GHz");
+    }
+
+    #[test]
+    fn power_text_shows_the_limit_when_known() {
+        assert_eq!(power_text(Some(Watts::new(85.4)), Some(Watts::new(320.0))), "85 / 320 W");
+        assert_eq!(power_text(Some(Watts::new(85.6)), None), "86 W");
+        assert_eq!(power_text(None, Some(Watts::new(320.0))), "???");
+        assert_eq!(power_text(None, None), "???");
+    }
+
+    #[test]
+    fn pcie_text_needs_both_parts() {
+        assert_eq!(pcie_text(Some(4), Some(16)), "Gen 4 x16");
+        assert_eq!(pcie_text(Some(4), None), "???");
+        assert_eq!(pcie_text(None, Some(16)), "???");
+    }
+
+    #[test]
+    fn cache_text_uses_binary_units() {
+        assert_eq!(cache_text(None), "???");
+        assert_eq!(cache_text(Some(Bytes::new(32 * 1024))), "32 KB");
+        assert_eq!(cache_text(Some(Bytes::new(32 * 1024 * 1024))), "32 MB");
+    }
+
+    #[test]
+    fn uptime_is_days_hours_minutes_seconds() {
+        assert_eq!(uptime_text(Duration::ZERO), "0:00:00:00");
+        assert_eq!(uptime_text(Duration::from_secs(59)), "0:00:00:59");
+        assert_eq!(uptime_text(Duration::from_secs(90_061)), "1:01:01:01");
+    }
+
+    #[test]
+    fn percent_text_rounds_and_marks_unknown() {
+        assert_eq!(percent_text(None), "???%");
+        assert_eq!(percent_text(Some(Percent::new(37.4))), "37%");
+        assert_eq!(percent_text(Some(Percent::new(99.6))), "100%");
+    }
+
+    #[test]
+    fn a_new_view_starts_on_the_cpu() {
+        assert!(PerformanceView::new().selected == Device::Cpu);
+    }
 }

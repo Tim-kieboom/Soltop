@@ -12,6 +12,7 @@ use hardware_scanner::{
     model::{Bytes, Process},
 };
 
+/// The column the table is sorted by.
 #[derive(Default, PartialEq, Clone, Copy)]
 enum SortKey {
     #[default]
@@ -24,6 +25,7 @@ enum SortKey {
     Name,
 }
 
+/// The process table: sort order, and which executable groups are expanded.
 pub struct ProcessView {
     key_sort: SortKey,
     descending: bool,
@@ -58,13 +60,16 @@ impl Group<'_> {
     }
 }
 
-#[derive(Clone, Copy)]
+/// What one visible table row shows. Indices point into the process list (`Single`, `Child`)
+/// or the group list (`Group`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RowKind {
     Group(usize),
     Single(usize),
     Child(usize),
 }
 impl ProcessView {
+    /// Sorted by CPU, busiest first, with every group collapsed.
     pub fn new() -> Self {
         Self {
             descending: true,
@@ -73,6 +78,9 @@ impl ProcessView {
         }
     }
 
+    /// Sorts the process list in place by the current key. Within a group this is the order the
+    /// children appear in; the groups themselves are ordered by [`sort_groups`](Self::sort_groups).
+    /// Call it for every new scan, and again when the sort key changes.
     pub fn sort_process(&mut self, info: &mut HardwareInfo) {
         let descending = self.descending;
         match self.key_sort {
@@ -100,6 +108,7 @@ impl ProcessView {
         }
     }
 
+    /// Draws the table: a header with sort buttons and totals, then one row per process or group.
     pub fn ui(&mut self, info: &mut HardwareInfo, ui: &mut egui::Ui) {
         TableBuilder::new(ui)
             .striped(true)
@@ -114,6 +123,7 @@ impl ProcessView {
             .body(|body| self.body_ui(info, body));
     }
 
+    /// One header cell per column, in the same order as the body cells.
     fn header_ui(&mut self, info: &mut HardwareInfo, mut header: TableRow<'_, '_>) {
         header.col(|ui| {
             self.header_col_ui(ui, info, String::new(), "PID", SortKey::Pid, Align::Min);
@@ -145,6 +155,7 @@ impl ProcessView {
         });
     }
 
+    /// Builds the groups, orders them, and draws the visible rows.
     fn body_ui(&mut self, info: &HardwareInfo, body: TableBody<'_>) {
         let ram_total = info.ram().total.unwrap_or_default().as_u64().max(1) as f32;
         let processes = info.processes();
@@ -207,6 +218,7 @@ impl ProcessView {
         });
     }
 
+    /// Orders groups by the current key, comparing their totals.
     fn sort_groups(&self, groups: &mut [Group<'_>]) {
         let d = self.descending;
         match self.key_sort {
@@ -237,6 +249,7 @@ impl ProcessView {
         rows
     }
 
+    /// A sort button with a bold total underneath.
     fn header_col_ui(
         &mut self,
         ui: &mut egui::Ui,
@@ -252,6 +265,7 @@ impl ProcessView {
         });
     }
 
+    /// The clickable column title, with an arrow on the column that is sorted.
     fn header_button_ui(
         &mut self,
         ui: &mut egui::Ui,
@@ -272,6 +286,7 @@ impl ProcessView {
         }
     }
 
+    /// Clicking the sorted column flips the direction; clicking another starts descending.
     fn set_sort(&mut self, key: SortKey) {
         if self.key_sort == key {
             self.descending = !self.descending;
@@ -282,6 +297,8 @@ impl ProcessView {
     }
 }
 
+/// Groups processes by executable path. Groups appear in the order their first process does,
+/// and the totals are sums, except GPU load and the owner (see [`Group`]).
 fn build_groups(processes: &[Process]) -> Vec<Group<'_>> {
     let mut groups: Vec<Group<'_>> = Vec::new();
     let mut by_path: HashMap<&Path, usize> = HashMap::new();
@@ -321,6 +338,7 @@ fn build_groups(processes: &[Process]) -> Vec<Group<'_>> {
     groups
 }
 
+/// The numbers one process contributes to its row.
 fn process_stats(process: &Process) -> Stats {
     Stats {
         cpu: process.cpu_usage.as_f32(),
@@ -330,6 +348,7 @@ fn process_stats(process: &Process) -> Stats {
     }
 }
 
+/// The PID column.
 fn pid_cell(ui: &mut egui::Ui, process: &Process) {
     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
         ui.label(process.pid.to_string());
@@ -342,6 +361,7 @@ fn name_label(ui: &mut egui::Ui, process: &Process) {
         .on_hover_ui(|ui| process_tooltip(ui, process));
 }
 
+/// Path, command line and details shown while hovering a process name.
 fn process_tooltip(ui: &mut egui::Ui, process: &Process) {
     ui.set_max_width(520.0);
     ui.strong(process.name.to_string_lossy());
@@ -377,12 +397,14 @@ fn process_tooltip(ui: &mut egui::Ui, process: &Process) {
         });
 }
 
+/// The User column; `__` when the owner is unknown.
 fn user_cell(ui: &mut egui::Ui, user: Option<&str>) {
     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
         ui.add(egui::Label::new(user.unwrap_or("__")).truncate());
     });
 }
 
+/// The CPU, RAM, Disk and GPU cells of one row.
 fn stat_cells(row: &mut TableRow<'_, '_>, stats: Stats, ram_total: f32) {
     row.col(|ui| heat_cell(ui, stats.cpu / 100.0, format!("{:.1}%", stats.cpu)));
     row.col(|ui| {
@@ -437,6 +459,7 @@ fn duration_text(duration: std::time::Duration) -> String {
     }
 }
 
+/// Average CPU load, shown in the CPU column header.
 fn total_cpu(info: &HardwareInfo) -> f32 {
     info.cpu().total_usage.unwrap_or_default().as_f32()
 }
@@ -469,12 +492,298 @@ fn total_gpu(info: &HardwareInfo) -> Option<f32> {
     }
 }
 
+/// Ordering that can be flipped for descending sorts.
 fn cmp<T: Ord>(a: &T, b: &T, descending: bool) -> Ordering {
     let ord = a.cmp(b);
     if descending { ord.reverse() } else { ord }
 }
 
+/// Like [`cmp`] for floats; incomparable values (NaN) count as equal.
 fn partial_cmp<T: PartialOrd>(a: &T, b: &T, descending: bool) -> Ordering {
     let ord = a.partial_cmp(b).unwrap_or(Ordering::Equal);
     if descending { ord.reverse() } else { ord }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use hardware_scanner::model::{Percent, Pid, ProcessState};
+
+    use super::*;
+
+    /// A process with only the fields the table logic looks at filled in.
+    fn process(
+        pid: u32,
+        path: &str,
+        user: Option<&str>,
+        cpu: f32,
+        memory: u64,
+        disk: u64,
+        gpu: Option<f32>,
+    ) -> Process {
+        Process {
+            pid: Pid::from_u32(pid),
+            memory: Bytes::new(memory),
+            name: Path::new(path).into(),
+            cpu_usage: Percent::new(cpu),
+            gpu_memory: None,
+            gpu_usage: gpu.map(Percent::new),
+            gpu_number: None,
+            user: user.map(Box::from),
+            command: "".into(),
+            parent: None,
+            state: ProcessState::Running,
+            run_time: Duration::ZERO,
+            threads: None,
+            disk_read: Bytes::new(disk),
+            disk_write: Bytes::new(0),
+        }
+    }
+
+    /// Three single-process groups that rank differently on every column.
+    fn fixture() -> Vec<Process> {
+        vec![
+            process(3, "/bin/a", Some("carol"), 1.0, 300, 5, None),
+            process(1, "/bin/b", Some("alice"), 5.0, 100, 50, Some(10.0)),
+            process(2, "/bin/c", None, 3.0, 200, 10, Some(90.0)),
+        ]
+    }
+
+    /// The group order after sorting `processes` by `key`, as executable paths.
+    fn order(processes: &[Process], key: SortKey, descending: bool) -> Vec<String> {
+        let mut view = ProcessView::new();
+        view.key_sort = key;
+        view.descending = descending;
+
+        let mut groups = build_groups(processes);
+        view.sort_groups(&mut groups);
+        groups
+            .iter()
+            .map(|group| group.path.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn paths(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
+    #[test]
+    fn processes_with_the_same_path_become_one_group_with_summed_stats() {
+        let processes = [
+            process(10, "/usr/bin/brave", Some("tim"), 1.0, 100, 10, Some(5.0)),
+            process(11, "/usr/bin/brave", Some("tim"), 2.0, 200, 20, Some(30.0)),
+            process(12, "/usr/bin/zsh", Some("tim"), 0.5, 50, 0, None),
+        ];
+
+        let groups = build_groups(&processes);
+
+        assert_eq!(groups.len(), 2);
+        let brave = &groups[0];
+        assert_eq!(brave.path, Path::new("/usr/bin/brave"));
+        assert_eq!(brave.indices, vec![0, 1]);
+        assert_eq!(brave.first_pid, 10);
+        assert_eq!(brave.user, Some("tim"));
+        assert_eq!(brave.stats.cpu, 3.0);
+        assert_eq!(brave.stats.memory, 300);
+        assert_eq!(brave.stats.disk, 30);
+        // GPU load is the busiest process, not the sum
+        assert_eq!(brave.stats.gpu, Some(30.0));
+
+        let zsh = &groups[1];
+        assert_eq!(zsh.indices, vec![2]);
+        assert_eq!(zsh.stats.gpu, None);
+    }
+
+    #[test]
+    fn groups_appear_in_the_order_of_their_first_process() {
+        let processes = [
+            process(1, "/bin/a", None, 0.0, 0, 0, None),
+            process(2, "/bin/b", None, 0.0, 0, 0, None),
+            process(3, "/bin/a", None, 0.0, 0, 0, None),
+        ];
+
+        let groups = build_groups(&processes);
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].path, Path::new("/bin/a"));
+        assert_eq!(groups[0].indices, vec![0, 2]);
+        assert_eq!(groups[1].path, Path::new("/bin/b"));
+    }
+
+    #[test]
+    fn a_group_remembers_its_lowest_pid() {
+        let processes = [
+            process(50, "/bin/a", None, 0.0, 0, 0, None),
+            process(7, "/bin/a", None, 0.0, 0, 0, None),
+        ];
+        assert_eq!(build_groups(&processes)[0].first_pid, 7);
+    }
+
+    #[test]
+    fn a_group_has_a_user_only_when_every_process_has_the_same_one() {
+        let same = [
+            process(1, "/bin/a", Some("tim"), 0.0, 0, 0, None),
+            process(2, "/bin/a", Some("tim"), 0.0, 0, 0, None),
+        ];
+        let mixed = [
+            process(1, "/bin/a", Some("tim"), 0.0, 0, 0, None),
+            process(2, "/bin/a", Some("root"), 0.0, 0, 0, None),
+        ];
+
+        assert_eq!(build_groups(&same)[0].user, Some("tim"));
+        assert_eq!(build_groups(&mixed)[0].user, None);
+    }
+
+    #[test]
+    fn group_gpu_load_ignores_processes_without_a_sample() {
+        let processes = [
+            process(1, "/bin/a", None, 0.0, 0, 0, None),
+            process(2, "/bin/a", None, 0.0, 0, 0, Some(10.0)),
+            process(3, "/bin/a", None, 0.0, 0, 0, None),
+        ];
+        assert_eq!(build_groups(&processes)[0].stats.gpu, Some(10.0));
+    }
+
+    #[test]
+    fn process_stats_reads_the_row_numbers() {
+        let stats = process_stats(&process(1, "/bin/a", None, 12.5, 4096, 77, Some(40.0)));
+        assert_eq!(stats.cpu, 12.5);
+        assert_eq!(stats.memory, 4096);
+        assert_eq!(stats.disk, 77);
+        assert_eq!(stats.gpu, Some(40.0));
+    }
+
+    #[test]
+    fn collapsed_groups_show_one_row_and_expanded_ones_show_their_children() {
+        let processes = [
+            process(1, "/usr/bin/brave", None, 0.0, 0, 0, None),
+            process(2, "/usr/bin/brave", None, 0.0, 0, 0, None),
+            process(3, "/usr/bin/zsh", None, 0.0, 0, 0, None),
+        ];
+        let groups = build_groups(&processes);
+        let mut view = ProcessView::new();
+
+        assert_eq!(
+            view.flatten(&groups),
+            vec![RowKind::Group(0), RowKind::Single(2)]
+        );
+
+        view.expanded.insert(PathBuf::from("/usr/bin/brave"));
+        assert_eq!(
+            view.flatten(&groups),
+            vec![
+                RowKind::Group(0),
+                RowKind::Child(0),
+                RowKind::Child(1),
+                RowKind::Single(2)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_single_process_is_never_a_group_even_if_its_path_is_expanded() {
+        let processes = [process(1, "/usr/bin/zsh", None, 0.0, 0, 0, None)];
+        let groups = build_groups(&processes);
+        let mut view = ProcessView::new();
+        view.expanded.insert(PathBuf::from("/usr/bin/zsh"));
+
+        assert_eq!(view.flatten(&groups), vec![RowKind::Single(0)]);
+    }
+
+    #[test]
+    fn groups_sort_by_cpu() {
+        assert_eq!(order(&fixture(), SortKey::Cpu, true), paths(&["/bin/b", "/bin/c", "/bin/a"]));
+        assert_eq!(order(&fixture(), SortKey::Cpu, false), paths(&["/bin/a", "/bin/c", "/bin/b"]));
+    }
+
+    #[test]
+    fn groups_sort_by_ram() {
+        assert_eq!(order(&fixture(), SortKey::Ram, true), paths(&["/bin/a", "/bin/c", "/bin/b"]));
+        assert_eq!(order(&fixture(), SortKey::Ram, false), paths(&["/bin/b", "/bin/c", "/bin/a"]));
+    }
+
+    #[test]
+    fn groups_sort_by_disk() {
+        assert_eq!(order(&fixture(), SortKey::Disk, true), paths(&["/bin/b", "/bin/c", "/bin/a"]));
+    }
+
+    #[test]
+    fn groups_sort_by_gpu_with_unsampled_ones_last_when_descending() {
+        assert_eq!(order(&fixture(), SortKey::Gpu, true), paths(&["/bin/c", "/bin/b", "/bin/a"]));
+        assert_eq!(order(&fixture(), SortKey::Gpu, false), paths(&["/bin/a", "/bin/b", "/bin/c"]));
+    }
+
+    #[test]
+    fn groups_sort_by_lowest_pid() {
+        assert_eq!(order(&fixture(), SortKey::Pid, false), paths(&["/bin/b", "/bin/c", "/bin/a"]));
+        assert_eq!(order(&fixture(), SortKey::Pid, true), paths(&["/bin/a", "/bin/c", "/bin/b"]));
+    }
+
+    #[test]
+    fn groups_sort_by_file_name() {
+        assert_eq!(order(&fixture(), SortKey::Name, false), paths(&["/bin/a", "/bin/b", "/bin/c"]));
+        assert_eq!(order(&fixture(), SortKey::Name, true), paths(&["/bin/c", "/bin/b", "/bin/a"]));
+    }
+
+    #[test]
+    fn groups_sort_by_user_with_unknown_owners_first_when_ascending() {
+        assert_eq!(order(&fixture(), SortKey::User, false), paths(&["/bin/c", "/bin/b", "/bin/a"]));
+        assert_eq!(order(&fixture(), SortKey::User, true), paths(&["/bin/a", "/bin/b", "/bin/c"]));
+    }
+
+    #[test]
+    fn clicking_the_sorted_column_flips_the_direction() {
+        let mut view = ProcessView::new();
+        assert!(view.key_sort == SortKey::Cpu && view.descending);
+
+        view.set_sort(SortKey::Cpu);
+        assert!(!view.descending);
+        view.set_sort(SortKey::Cpu);
+        assert!(view.descending);
+    }
+
+    #[test]
+    fn clicking_another_column_starts_descending() {
+        let mut view = ProcessView::new();
+        view.set_sort(SortKey::Cpu); // now ascending
+        view.set_sort(SortKey::Ram);
+
+        assert!(view.key_sort == SortKey::Ram);
+        assert!(view.descending);
+    }
+
+    #[test]
+    fn cmp_helpers_flip_for_descending() {
+        assert_eq!(cmp(&1, &2, false), Ordering::Less);
+        assert_eq!(cmp(&1, &2, true), Ordering::Greater);
+        assert_eq!(partial_cmp(&1.0, &2.0, false), Ordering::Less);
+        assert_eq!(partial_cmp(&1.0, &2.0, true), Ordering::Greater);
+    }
+
+    #[test]
+    fn partial_cmp_treats_nan_as_equal_in_both_directions() {
+        assert_eq!(partial_cmp(&f32::NAN, &1.0, false), Ordering::Equal);
+        assert_eq!(partial_cmp(&f32::NAN, &1.0, true), Ordering::Equal);
+    }
+
+    #[test]
+    fn rate_text_picks_the_unit() {
+        assert_eq!(rate_text(0), "0 B/s");
+        assert_eq!(rate_text(999), "999 B/s");
+        assert_eq!(rate_text(12_000), "12 KB/s");
+        assert_eq!(rate_text(1_500_000), "1.5 MB/s");
+        assert_eq!(rate_text(2_000_000_000), "2.0 GB/s");
+    }
+
+    #[test]
+    fn duration_text_shows_days_only_when_there_are_any() {
+        assert_eq!(duration_text(Duration::ZERO), "00:00:00");
+        assert_eq!(duration_text(Duration::from_secs(3_661)), "01:01:01");
+        assert_eq!(duration_text(Duration::from_secs(90_061)), "1d 01:01:01");
+        assert_eq!(
+            duration_text(Duration::from_secs(2 * 86_400 + 3 * 3_600 + 4 * 60 + 5)),
+            "2d 03:04:05"
+        );
+    }
 }

@@ -30,6 +30,7 @@ struct Counters {
     io_ms: u64,
 }
 
+/// Reads physical disks from /sys/block, /proc/diskstats and the mount table.
 pub struct DiskScanner {
     /// Physical disks found at startup; disks plugged in later are not picked up.
     ids: Vec<Box<str>>,
@@ -38,6 +39,7 @@ pub struct DiskScanner {
     last_scan: Option<Instant>,
 }
 impl DiskScanner {
+    /// Finds the disks present right now and loads the mount list.
     pub fn new() -> Self {
         Self {
             ids: discover_disks(),
@@ -47,6 +49,7 @@ impl DiskScanner {
         }
     }
 
+    /// Model, size and type of every disk found at startup, in the same order as [`scan`](Self::scan).
     pub fn static_infos(&self) -> Vec<DiskStatic> {
         self.ids.iter().map(|id| static_info(id)).collect()
     }

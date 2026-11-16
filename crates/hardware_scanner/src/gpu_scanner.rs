@@ -13,16 +13,21 @@ use crate::{
     model::{Bytes, Degree, GpuNumbers, GpuStatic, Mhz, Percent, Watts},
 };
 
+/// Result of an NVML call.
 pub type GpuResult<T = ()> = Result<T, NvmlError>;
 
+/// A process using one or more GPUs, merged across all of them.
 pub struct GpuProcess {
     pub pid: sysinfo::Pid,
+    /// Every GPU the process uses.
     pub gpu_numbers: GpuNumbers,
+    /// Video memory held, summed over GPUs; `None` when the driver does not report it.
     pub memory_usage: Option<Bytes>,
     /// SM utilization of the newest NVML sample; `None` when NVML had no sample this tick.
     pub gpu_usage: Option<Percent>,
 }
 
+/// Reads NVIDIA GPUs through NVML.
 pub struct NvidiaScanner {
     nvml: Nvml,
     processes: HashMap<sysinfo::Pid, GpuProcess>,
@@ -31,6 +36,7 @@ pub struct NvidiaScanner {
     last_seen: HashMap<usize, u64>,
 }
 impl NvidiaScanner {
+    /// Loads NVML. Fails when there is no NVIDIA driver or library on the machine.
     pub fn new() -> GpuResult<Self> {
         let nvml = Nvml::init()?;
         Ok(Self {
@@ -40,16 +46,23 @@ impl NvidiaScanner {
         })
     }
 
+    /// Number of NVIDIA GPUs.
     pub fn gpu_count(&self) -> GpuResult<usize> {
         self.nvml.device_count().map(|c| c as usize)
     }
 
+    /// One entry per GPU index, each either a usable GPU or the error from opening it.
     pub fn gpu_iter(&self) -> GpuResult<impl Iterator<Item = GpuResult<NvidiaGpu<'_>>>> {
         Ok((0..self.gpu_count()?)
             .into_iter()
             .map(|i| self.get_gpu(i as u32).map(NvidiaGpu)))
     }
 
+    /// Processes using any GPU, merged by pid, with video memory and utilization.
+    ///
+    /// Advances the per-GPU utilization cursor, so call it exactly once per scan. Failures
+    /// of single memory or utilization queries are pushed to `errors` and the rest of the data
+    /// is still returned, but failing to count or open a GPU fails the whole call.
     pub fn gpu_processes<'a>(
         &'a mut self,
         errors: &mut Vec<ScanError>,
@@ -117,6 +130,7 @@ impl NvidiaScanner {
         merge_utilization(&mut self.processes, gpu_number, newest);
     }
 
+    /// The installed NVIDIA driver version, e.g. "570.133.07".
     pub fn driver_version(&self) -> Option<String> {
         self.nvml.sys_driver_version().ok()
     }
@@ -137,8 +151,13 @@ impl NvidiaScanner {
     }
 }
 
+/// One opened NVIDIA GPU.
 pub struct NvidiaGpu<'a>(nvml_wrapper::Device<'a>);
 impl<'a> NvidiaGpu<'a> {
+    /// Fills `info` with the GPU's current numbers.
+    ///
+    /// Load, memory and temperature are required: if one fails the whole call fails. Clocks,
+    /// power, fan, encoder, decoder and PCIe are optional and stay `None` when unsupported.
     pub fn scan(&self, info: &mut super::GpuInfo) -> GpuResult {
         let memory = self.0.memory_info()?;
         info.memory_total = Some(Bytes::new(memory.total));
@@ -182,6 +201,7 @@ impl<'a> NvidiaGpu<'a> {
 }
 
 impl<'a> NvidiaGpu<'a> {
+    /// The GPU's name, power limit and maximum PCIe link.
     pub fn static_info(&self) -> GpuStatic {
         GpuStatic {
             name: self.0.name().unwrap_or_default().into(),
@@ -192,6 +212,7 @@ impl<'a> NvidiaGpu<'a> {
     }
 }
 
+/// NVML reports power in milliwatts.
 fn milliwatts(mw: u32) -> Watts {
     Watts::new(mw as f32 / 1000.0)
 }
@@ -419,5 +440,11 @@ mod tests {
         assert_eq!(entry.memory_usage, None);
         assert_eq!(entry.gpu_usage, None);
         assert!(entry.gpu_numbers.contains(2));
+    }
+
+    #[test]
+    fn milliwatts_converts_to_watts() {
+        assert_eq!(milliwatts(85_500), Watts::new(85.5));
+        assert_eq!(milliwatts(0), Watts::new(0.0));
     }
 }
