@@ -13,6 +13,19 @@ use crate::{
 
 mod processes;
 
+const CPU_COLOR: egui::Color32 = egui::Color32::from_rgb(17, 125, 187);
+const RAM_COLOR: egui::Color32 = egui::Color32::from_rgb(139, 18, 174);
+
+/// Large title on the left, current value on the right (Task Manager style).
+fn section_header(ui: &mut egui::Ui, title: &str, value: &str) {
+    ui.horizontal(|ui| {
+        ui.heading(title);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.heading(value);
+        });
+    });
+}
+
 #[derive(PartialEq, Clone, Copy, Default)]
 enum Tab {
     #[default]
@@ -68,6 +81,18 @@ impl App {
             ui.selectable_value(&mut self.tab, Tab::Processes, "Processes");
             ui.selectable_value(&mut self.tab, Tab::Preformance, "Performance");
         });
+
+        if let Some(info) = &self.info {
+            ui.add_space(12.0);
+            ui.separator();
+            if let Some(cpu) = info.cpu().total_usage {
+                ui.small(format!("CPU  {:.0}%", cpu.as_f32()));
+            }
+            if let (Some(used), Some(total)) = (info.ram().used, info.ram().total) {
+                let ratio = used.as_u64() as f32 / total.as_u64().max(1) as f32;
+                ui.small(format!("RAM  {:.0}%", ratio * 100.0));
+            }
+        }
     }
 
     fn notices_ui(&self, ui: &mut egui::Ui) {
@@ -116,26 +141,42 @@ impl App {
             return;
         };
 
-        ui.strong("CPU");
         let cpu = info.cpu();
-        let total = match cpu.total_usage {
-            None => format!("total: ???%"),
-            Some(usage) => format!("total: {:.0}%", usage.as_f32()),
+        let cpu_total = match cpu.total_usage {
+            None => "???%".to_string(),
+            Some(usage) => format!("{:.0}%", usage.as_f32()),
         };
+        section_header(ui, "CPU", &cpu_total);
+        self.cpu_history.plot(ui, "plot_cpu", "CPU", CPU_COLOR);
 
-        ui.label(total);
-        egui::Grid::new("cores").num_columns(4).show(ui, |ui| {
-            for (i, core) in cpu.core_usage.iter().enumerate() {
-                let bar = egui::ProgressBar::new(core.as_f32() / 100.0).show_percentage();
-                ui.add(bar);
-                if (i + 1) % 4 == 0 {
-                    ui.end_row();
+        ui.add_space(6.0);
+        egui::Grid::new("cores")
+            .num_columns(4)
+            .spacing([8.0, 4.0])
+            .show(ui, |ui| {
+                for (i, core) in cpu.core_usage.iter().enumerate() {
+                    let bar = egui::ProgressBar::new(core.as_f32() / 100.0)
+                        .fill(CPU_COLOR)
+                        .show_percentage();
+                    ui.add(bar);
+                    if (i + 1) % 4 == 0 {
+                        ui.end_row();
+                    }
                 }
-            }
-        });
+            });
 
-        self.cpu_history.plot(ui, "plot_cpu", "CPU");
-        self.ram_history.plot(ui, "plot_ram", "RAM");
+        ui.add_space(16.0);
+        let ram = info.ram();
+        let ram_text = match (ram.used, ram.total) {
+            (Some(used), Some(total)) => format!(
+                "{:.1} / {:.1} GB",
+                used.to_gb(1).as_f32(),
+                total.to_gb(1).as_f32()
+            ),
+            _ => "???".to_string(),
+        };
+        section_header(ui, "Memory", &ram_text);
+        self.ram_history.plot(ui, "plot_ram", "RAM", RAM_COLOR);
     }
 
     fn recieve_scan(&mut self) {
@@ -198,7 +239,7 @@ impl<T: AsF64> History<T> {
         self.queue.push_back(value);
     }
 
-    fn plot(&self, ui: &mut egui::Ui, label: &str, line_name: &str) {
+    fn plot(&self, ui: &mut egui::Ui, label: &str, line_name: &str, color: egui::Color32) {
         let points: Vec<[f64; 2]> = self
             .queue
             .iter()
@@ -207,13 +248,24 @@ impl<T: AsF64> History<T> {
             .collect();
 
         egui_plot::Plot::new(label)
-            .height(120.0)
+            .height(160.0)
             .include_y(0.0)
             .include_y(self.max)
             .allow_drag(false)
             .allow_zoom(false)
+            .allow_scroll(false)
+            .allow_boxed_zoom(false)
+            .show_axes([false, false])
+            .show_x(false)
+            .show_y(false)
             .show(ui, |plot_ui| {
-                plot_ui.line(egui_plot::Line::new(line_name, points));
+                plot_ui.line(
+                    egui_plot::Line::new(line_name, points)
+                        .color(color)
+                        .width(1.5)
+                        .fill(0.0)
+                        .fill_alpha(0.25),
+                );
             });
     }
 }
