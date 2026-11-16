@@ -1,4 +1,4 @@
-use std::{fmt::Debug, path::Path};
+use std::{ffi::OsStr, fmt::Debug, path::Path};
 
 use nvml_wrapper::error::NvmlError;
 use thiserror::Error;
@@ -19,25 +19,43 @@ macro_rules! newtype {
                 self.0
             }
         }
+
+        impl AsF64 for $name {
+            fn as_f64(&self) -> f64 {
+                self.0 as f64
+            }
+        }
     };
 }
 
 newtype!(
-    #[derive(Debug, Clone, Copy, Default)]
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
     pub struct Bytes(u64) { as_u64 }
 );
 newtype!(
-    #[derive(Debug, Clone, Copy, Default)]
+    #[derive(Debug, Clone, Copy, Default, PartialEq, PartialOrd)]
     pub struct Gb(f32) { as_f32 }
 );
 newtype!(
-    #[derive(Debug, Clone, Copy, Default)]
+    #[derive(Debug, Clone, Copy, Default, PartialEq, PartialOrd)]
     pub struct Degree(f32) { as_f32 }
 );
 newtype!(
-    #[derive(Debug, Clone, Copy, Default)]
+    #[derive(Debug, Clone, Copy, Default, PartialEq, PartialOrd)]
     pub struct Percent(f32) { as_f32 }
 );
+
+pub trait AsF64 {
+    fn as_f64(&self) -> f64;
+}
+
+impl Bytes {
+    pub fn to_gb(self, decimal: u8) -> Gb {
+        let deci = 10_f32.powi(decimal as i32);
+        let gb = ((self.0 as f32 / 1000000000.0) * deci).round() / deci;
+        Gb(gb)
+    }
+}
 
 pub type ScanResult<T = ()> = Result<T, ScanError>;
 
@@ -79,6 +97,11 @@ pub struct Process {
     pub cpu_usage: Percent,
     pub gpu_memory: Option<Bytes>,
     pub gpu_number: Option<GpuNumbers>,
+}
+impl Process {
+    pub fn file_name(&self) -> &OsStr {
+        self.name.file_name().unwrap_or(self.name.as_os_str())
+    }
 }
 
 #[derive(Clone, Copy, Default)]

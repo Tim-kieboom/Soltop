@@ -17,6 +17,7 @@ type Receiver = sync::mpsc::Receiver<Message>;
 #[derive(Debug)]
 pub enum Message {
     Info(HardwareInfo),
+    First(HardwareInfo),
     StartupError(ScanError),
     GpuUnavailble(ScanError),
 }
@@ -63,6 +64,10 @@ fn run<F: Fn() + Send + 'static>(sender: Sender, scan_interval: Duration, redraw
         if send(&sender, Message::GpuUnavailble(err)) {
             return;
         }
+    }
+
+    if send(&sender, Message::First(take(&mut info))) {
+        return;
     }
 
     loop {

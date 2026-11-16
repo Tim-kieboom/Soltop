@@ -7,3 +7,5 @@ edition = "2024"
 eframe = "0.37.0"
 thiserror = "2.0.21"
 hardware_scanner = {path = "./crates/hardware_scanner"}
+egui_extras = "0.37.0"
+egui_plot = "0.38.0"

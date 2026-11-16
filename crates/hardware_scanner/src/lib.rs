@@ -46,6 +46,10 @@ impl HardwareInfo {
         &self.processes
     }
 
+    pub fn processes_mut(&mut self) -> &mut [Process] {
+        &mut self.processes
+    }
+
     pub fn errors(&self) -> &[ScanError] {
         &self.errors
     }
