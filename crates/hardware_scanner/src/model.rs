@@ -95,6 +95,63 @@ pub struct StaticInfo {
     pub gpus: Vec<Option<GpuStatic>>,
     pub disks: Vec<DiskStatic>,
     pub nets: Vec<NetStatic>,
+    pub system: SystemStatic,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct SystemStatic {
+    pub hostname: Box<str>,
+    /// Distribution and version, e.g. "Linux NixOS 25.11".
+    pub os: Box<str>,
+    pub kernel: Box<str>,
+    pub architecture: Box<str>,
+}
+
+/// Averages of the number of runnable tasks over the last 1, 5 and 15 minutes.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LoadAverage {
+    pub one: f32,
+    pub five: f32,
+    pub fifteen: f32,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum BatteryState {
+    Charging,
+    Discharging,
+    Full,
+    NotCharging,
+    #[default]
+    Unknown,
+}
+impl BatteryState {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Charging => "Charging",
+            Self::Discharging => "Discharging",
+            Self::Full => "Full",
+            Self::NotCharging => "Not charging",
+            Self::Unknown => "Unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BatteryInfo {
+    pub percent: Percent,
+    pub state: BatteryState,
+    /// Current charge or discharge rate.
+    pub power: Option<Watts>,
+    /// Time until empty (discharging) or full (charging).
+    pub time_remaining: Option<Duration>,
+}
+
+/// Machine-wide live values that are not tied to one device.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SystemInfo {
+    pub load: Option<LoadAverage>,
+    /// `None` on machines without a battery.
+    pub battery: Option<BatteryInfo>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

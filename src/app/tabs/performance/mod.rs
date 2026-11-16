@@ -774,7 +774,7 @@ fn cache_text(size: Option<Bytes>) -> String {
 }
 
 /// "d:hh:mm:ss", like Task Manager's Up time.
-fn uptime_text(uptime: std::time::Duration) -> String {
+pub(super) fn uptime_text(uptime: std::time::Duration) -> String {
     let secs = uptime.as_secs();
     format!(
         "{}:{:02}:{:02}:{:02}",
@@ -790,7 +790,7 @@ fn percent_text(usage: Option<Percent>) -> String {
 }
 
 /// Large title on the left, current value on the right (Task Manager style).
-fn section_header(ui: &mut egui::Ui, title: &str, value: &str) {
+pub(super) fn section_header(ui: &mut egui::Ui, title: &str, value: &str) {
     ui.horizontal(|ui| {
         ui.heading(title);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -800,7 +800,7 @@ fn section_header(ui: &mut egui::Ui, title: &str, value: &str) {
 }
 
 /// A row of "small label over big value" tiles.
-fn stats_ui(ui: &mut egui::Ui, stats: &[(&str, String)]) {
+pub(super) fn stats_ui(ui: &mut egui::Ui, stats: &[(&str, String)]) {
     ui.horizontal_wrapped(|ui| {
         for (label, value) in stats {
             ui.vertical(|ui| {

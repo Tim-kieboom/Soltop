@@ -8,7 +8,10 @@ use std::{
 use crate::{
     ScanError,
     gpu_scanner::{GpuProcess, GpuResult, NvidiaScanner},
-    model::{Bytes, CpuCache, CpuStatic, Degree, Mhz, Percent, ProcessState, safe_div},
+    model::{
+        Bytes, CpuCache, CpuStatic, Degree, LoadAverage, Mhz, Percent, ProcessState, SystemStatic,
+        safe_div,
+    },
     sensor_table::{self, HwmonRule, MAX_VALID_C, MIN_VALID_C, TargetRules},
     sysfs::{read_dir_paths, read_trimmed},
 };
@@ -93,6 +96,29 @@ impl SystemScanner {
 
     pub fn cpus(&self) -> impl Iterator<Item = Cpu<'_>> {
         self.system.cpus().iter().map(Cpu)
+    }
+
+    pub fn system_static(&self) -> SystemStatic {
+        use sysinfo::System;
+        let os = System::long_os_version()
+            .or_else(|_| System::name())
+            .unwrap_or_default();
+
+        SystemStatic {
+            hostname: System::host_name().unwrap_or_default().into(),
+            os: os.into(),
+            kernel: System::kernel_version().unwrap_or_default().into(),
+            architecture: System::cpu_arch().into(),
+        }
+    }
+
+    pub fn load_average(&self) -> Option<LoadAverage> {
+        let load = sysinfo::System::load_average().ok()?;
+        Some(LoadAverage {
+            one: load.one as f32,
+            five: load.five as f32,
+            fifteen: load.fifteen as f32,
+        })
     }
 
     /// Average current clock over the cores that report one.

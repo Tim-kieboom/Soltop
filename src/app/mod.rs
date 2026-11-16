@@ -12,6 +12,7 @@ enum Tab {
     #[default]
     Processes,
     Preformance,
+    System,
 }
 
 pub struct App {
@@ -22,6 +23,7 @@ pub struct App {
     gpu_note: Option<Box<str>>,
     info: Option<HardwareInfo>,
     performance_view: tabs::PerformanceView,
+    system_view: tabs::SystemView,
 }
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -33,6 +35,7 @@ impl eframe::App for App {
         match self.tab {
             Tab::Processes => self.processes_ui(ui),
             Tab::Preformance => self.performance_ui(ui),
+            Tab::System => self.system_ui(ui),
         }
 
         self.recieve_scan();
@@ -51,6 +54,7 @@ impl App {
             tab: Tab::default(),
             process_view: tabs::ProcessView::new(),
             performance_view: tabs::PerformanceView::new(),
+            system_view: tabs::SystemView::new(),
         }
     }
 
@@ -59,6 +63,7 @@ impl App {
         ui.vertical(|ui| {
             ui.selectable_value(&mut self.tab, Tab::Processes, "Processes");
             ui.selectable_value(&mut self.tab, Tab::Preformance, "Performance");
+            ui.selectable_value(&mut self.tab, Tab::System, "System");
         });
 
         if let Some(info) = &self.info {
@@ -96,6 +101,16 @@ impl App {
         self.process_view.ui(info, ui);
     }
 
+    fn system_ui(&mut self, ui: &mut egui::Ui) {
+        let Some(info) = &self.info else {
+            ui.spinner();
+            ui.label("Scanning... ");
+            return;
+        };
+
+        self.system_view.ui(info, ui);
+    }
+
     fn performance_ui(&mut self, ui: &mut egui::Ui) {
         let Some(info) = &self.info else {
             ui.spinner();
@@ -125,6 +140,7 @@ impl App {
 
             match message {
                 Message::First { info, static_info } => {
+                    self.system_view.load_first_info(static_info.system.clone());
                     self.performance_view.load_first_info(&info, static_info);
                     self.load_new_info(info);
                 }

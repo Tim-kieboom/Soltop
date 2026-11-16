@@ -5,11 +5,12 @@ use crate::{
     gpu_scanner::NvidiaScanner,
     net_scanner::NetScanner,
     model::{
-        CpuInfo, DiskInfo, GpuInfo, NetInfo, Percent, Process, RamInfo, ScanError, ScanResult, StaticInfo, safe_div,
+        CpuInfo, DiskInfo, GpuInfo, NetInfo, SystemInfo, Percent, Process, RamInfo, ScanError, ScanResult, StaticInfo, safe_div,
     },
     system_scanner::SystemScanner,
 };
 
+mod battery_scanner;
 mod disk_scanner;
 mod gpu_scanner;
 mod net_scanner;
@@ -26,6 +27,7 @@ pub struct HardwareInfo {
     gpus: Vec<Option<GpuInfo>>,
     disks: Vec<DiskInfo>,
     nets: Vec<NetInfo>,
+    system: SystemInfo,
     errors: Vec<ScanError>,
 }
 impl HardwareInfo {
@@ -36,6 +38,7 @@ impl HardwareInfo {
             gpus: vec![],
             disks: vec![],
             nets: vec![],
+            system: SystemInfo::default(),
             errors: vec![],
             processes: vec![],
         }
@@ -61,6 +64,10 @@ impl HardwareInfo {
         &self.nets
     }
 
+    pub fn system(&self) -> &SystemInfo {
+        &self.system
+    }
+
     pub fn processes(&self) -> &[Process] {
         &self.processes
     }
@@ -81,6 +88,7 @@ impl HardwareInfo {
         self.gpus.clear();
         self.disks.clear();
         self.nets.clear();
+        self.system = SystemInfo::default();
         self.errors.clear();
         self.processes.clear();
         self.cpu.core_usage.clear();
@@ -129,6 +137,7 @@ impl Hardwarescanner {
                 .unwrap_or_default(),
             disks: self.disks.static_infos(),
             nets: self.nets.static_infos(),
+            system: self.cpu_rams.system_static(),
         }
     }
 
@@ -159,6 +168,8 @@ impl Hardwarescanner {
         }
         self.disks.scan(&mut info.disks);
         self.nets.scan(&mut info.nets);
+        info.system.load = self.cpu_rams.load_average();
+        info.system.battery = battery_scanner::read_battery();
     }
 
     fn scan_ram(&self, info: &mut HardwareInfo) {
