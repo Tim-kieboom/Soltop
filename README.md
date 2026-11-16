@@ -45,13 +45,21 @@ here the CPU with a live graph for every core.
 
 ### Nix / NixOS
 
-The repository has a flake with a dev shell that provides everything above:
+The repository is a flake. Try it without installing, or install it into your profile:
 
 ```bash
-nix develop
+nix run github:Tim-kieboom/Soltop
+nix profile install github:Tim-kieboom/Soltop
 ```
 
-If you use [direnv](https://direnv.net/), `.envrc` loads the shell automatically.
+To pin a release, add its tag: `github:Tim-kieboom/Soltop/v0.0.1`.
+
+On NixOS, add it as an input and put `inputs.soltop.packages.${pkgs.stdenv.hostPlatform.system}.default` in
+`environment.systemPackages`. The program starts as `Soltop`. The package puts the graphics libraries it loads
+at runtime on the program's library path, and looks in `/run/opengl-driver/lib` for the NVIDIA driver.
+
+`nix develop` gives a shell with the Rust toolchain and the same libraries to work on the code. If you use
+[direnv](https://direnv.net/), `.envrc` loads that shell automatically.
 
 ## Build and run
 
