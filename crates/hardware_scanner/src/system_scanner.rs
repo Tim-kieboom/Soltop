@@ -9,6 +9,7 @@ use crate::{
     gpu_scanner::{GpuProcess, GpuResult, NvidiaScanner},
     model::{Bytes, CpuCache, CpuStatic, Degree, Mhz, Percent, safe_div},
     sensor_table::{self, HwmonRule, MAX_VALID_C, MIN_VALID_C, TargetRules},
+    sysfs::{read_dir_paths, read_trimmed},
 };
 
 pub type CpuRamResult<T = ()> = Result<T, sysinfo::Error>;
@@ -336,14 +337,4 @@ fn read_max(paths: &[PathBuf]) -> Option<Degree> {
         .filter(|celsius| (MIN_VALID_C..=MAX_VALID_C).contains(celsius))
         .reduce(f32::max)
         .map(Degree::new)
-}
-
-fn read_dir_paths(dir: impl AsRef<Path>) -> Vec<PathBuf> {
-    fs::read_dir(dir)
-        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
-        .unwrap_or_default()
-}
-
-fn read_trimmed(path: &Path) -> Option<String> {
-    fs::read_to_string(path).ok().map(|s| s.trim().to_string())
 }

@@ -93,6 +93,25 @@ pub struct StaticInfo {
     pub gpu_driver: Option<Box<str>>,
     /// One entry per GPU index, `None` when that GPU could not be queried.
     pub gpus: Vec<Option<GpuStatic>>,
+    pub disks: Vec<DiskStatic>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum DiskKind {
+    Nvme,
+    Ssd,
+    Hdd,
+    #[default]
+    Unknown,
+}
+
+/// A physical disk (not a partition), identified by its kernel name such as `nvme0n1`.
+#[derive(Debug, Default, Clone)]
+pub struct DiskStatic {
+    pub id: Box<str>,
+    pub model: Box<str>,
+    pub size: Bytes,
+    pub kind: DiskKind,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -121,6 +140,29 @@ pub struct CpuCache {
     pub l1_instruction: Option<Bytes>,
     pub l2: Option<Bytes>,
     pub l3: Option<Bytes>,
+}
+
+/// Live numbers for the disk with the same `id` as a [`DiskStatic`].
+#[derive(Debug, Default, Clone)]
+pub struct DiskInfo {
+    pub id: Box<str>,
+    /// Bytes per second since the previous scan; `None` on the very first scan.
+    pub read_rate: Option<Bytes>,
+    pub write_rate: Option<Bytes>,
+    pub active_time: Option<Percent>,
+    /// Average time per completed request since the previous scan, in milliseconds.
+    pub response_ms: Option<f32>,
+    pub temperature: Option<Degree>,
+    pub volumes: Vec<Volume>,
+}
+
+/// A mounted filesystem living on a disk.
+#[derive(Debug, Clone)]
+pub struct Volume {
+    pub mount: Box<Path>,
+    pub file_system: Box<str>,
+    pub total: Bytes,
+    pub used: Bytes,
 }
 
 #[derive(Debug, Default)]

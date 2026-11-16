@@ -1,7 +1,7 @@
 use eframe::egui::{self, Align2, Color32, FontId, Mesh, Pos2, Rect, Sense, Shape, Stroke};
 use hardware_scanner::{
     HardwareInfo,
-    model::{AsF64, Bytes, Gb, Mhz, Percent, StaticInfo, Watts},
+    model::{AsF64, Bytes, DiskKind, Gb, Mhz, Percent, StaticInfo, Watts},
 };
 
 use crate::app::tabs::performance::history::History;
@@ -11,6 +11,9 @@ mod history;
 const CPU_COLOR: Color32 = Color32::from_rgb(17, 125, 187);
 const RAM_COLOR: Color32 = Color32::from_rgb(139, 18, 174);
 const GPU_COLOR: Color32 = Color32::from_rgb(60, 160, 90);
+const DISK_COLOR: Color32 = Color32::from_rgb(214, 148, 0);
+/// Unused part of a volume's usage bar.
+const VOLUME_EMPTY_COLOR: Color32 = Color32::from_gray(58);
 
 /// How many of the newest samples the mini graphs in the device list show.
 const MINI_POINTS: usize = 60;
@@ -24,7 +27,24 @@ enum Device {
     #[default]
     Cpu,
     Memory,
+    Disk(usize),
     Gpu(usize),
+}
+
+struct DiskHistory {
+    active: History<Percent>,
+    read: History<Bytes>,
+    write: History<Bytes>,
+}
+impl DiskHistory {
+    fn new() -> Self {
+        Self {
+            active: History::new(1000, 100.0),
+            // A max of 0 lets the transfer graphs scale to the data.
+            read: History::new(1000, 0.0),
+            write: History::new(1000, 0.0),
+        }
+    }
 }
 
 struct GpuHistory {
@@ -56,6 +76,7 @@ pub struct PerformanceView {
     core_histories: Vec<History<Percent>>,
     ram_history: History<Gb>,
     gpu_histories: Vec<GpuHistory>,
+    disk_histories: Vec<DiskHistory>,
 }
 impl PerformanceView {
     pub fn new() -> Self {
@@ -66,6 +87,7 @@ impl PerformanceView {
             ram_history: History::new(1000, 0.0),
             cpu_history: History::new(1000, 100.0),
             gpu_histories: Vec::new(),
+            disk_histories: Vec::new(),
         }
     }
 
@@ -106,6 +128,21 @@ impl PerformanceView {
                 history.memory.push(memory);
             }
         }
+
+        while self.disk_histories.len() < info.disks().len() {
+            self.disk_histories.push(DiskHistory::new());
+        }
+        for (history, disk) in self.disk_histories.iter_mut().zip(info.disks()) {
+            if let Some(active) = disk.active_time {
+                history.active.push(active);
+            }
+            if let Some(read) = disk.read_rate {
+                history.read.push(read);
+            }
+            if let Some(write) = disk.write_rate {
+                history.write.push(write);
+            }
+        }
     }
 
     pub fn ui(&mut self, info: &HardwareInfo, ui: &mut egui::Ui) {
@@ -117,6 +154,7 @@ impl PerformanceView {
         egui::ScrollArea::vertical().show(ui, |ui| match self.selected_device(info) {
             Device::Cpu => self.cpu_ui(info, ui),
             Device::Memory => self.ram_ui(info, ui),
+            Device::Disk(i) => self.disk_ui(info, i, ui),
             Device::Gpu(i) => self.gpu_ui(info, i, ui),
         });
     }
@@ -125,6 +163,7 @@ impl PerformanceView {
     fn selected_device(&self, info: &HardwareInfo) -> Device {
         match self.selected {
             Device::Gpu(i) if !matches!(info.gpus().get(i), Some(Some(_))) => Device::Cpu,
+            Device::Disk(i) if i >= info.disks().len() => Device::Cpu,
             device => device,
         }
     }
@@ -134,6 +173,7 @@ impl PerformanceView {
         let selected = self.selected_device(info);
 
         let mut devices = vec![Device::Cpu, Device::Memory];
+        devices.extend((0..info.disks().len()).map(Device::Disk));
         devices.extend(
             info.gpus()
                 .iter()
@@ -176,6 +216,22 @@ impl PerformanceView {
                     color: RAM_COLOR,
                     values: self.ram_history.recent(MINI_POINTS),
                     max: self.ram_history.max(),
+                }
+            }
+            Device::Disk(i) => {
+                let disk = info.disks().get(i);
+                let kind = self.disk_static(info, i).map_or("", |facts| kind_text(facts.kind));
+                let active = percent_text(disk.and_then(|disk| disk.active_time));
+                Card {
+                    title: format!("Disk {i}"),
+                    value: format!("{kind}  {active}").trim().to_string(),
+                    color: DISK_COLOR,
+                    values: self
+                        .disk_histories
+                        .get(i)
+                        .map(|history| history.active.recent(MINI_POINTS))
+                        .unwrap_or_default(),
+                    max: 100.0,
                 }
             }
             Device::Gpu(i) => {
@@ -313,6 +369,96 @@ impl PerformanceView {
         );
     }
 
+    /// The static facts of the disk at `index`, matched by id so a reordered list can't mix them up.
+    fn disk_static(&self, info: &HardwareInfo, index: usize) -> Option<&hardware_scanner::model::DiskStatic> {
+        let id = &info.disks().get(index)?.id;
+        self.static_info.disks.iter().find(|facts| facts.id == *id)
+    }
+
+    fn disk_ui(&self, info: &HardwareInfo, index: usize, ui: &mut egui::Ui) {
+        let Some(disk) = info.disks().get(index) else {
+            return;
+        };
+        let Some(history) = self.disk_histories.get(index) else {
+            return;
+        };
+        let facts = self.disk_static(info, index);
+
+        let model = facts.map_or("", |facts| &*facts.model);
+        section_header(ui, &format!("Disk {index} ({})", disk.id), model);
+        history
+            .active
+            .plot(ui, format!("plot_disk_{index}"), "Active time", DISK_COLOR);
+
+        ui.add_space(8.0);
+        ui.strong("Read");
+        history
+            .read
+            .plot(ui, format!("plot_disk_read_{index}"), "Read", DISK_COLOR);
+        ui.add_space(8.0);
+        ui.strong("Write");
+        history
+            .write
+            .plot(ui, format!("plot_disk_write_{index}"), "Write", DISK_COLOR);
+
+        ui.add_space(8.0);
+        stats_ui(
+            ui,
+            &[
+                ("Active time", percent_text(disk.active_time)),
+                (
+                    "Average response time",
+                    disk.response_ms.map_or("???".into(), |ms| format!("{ms:.1} ms")),
+                ),
+                ("Read speed", disk.read_rate.map_or("???".into(), rate_text)),
+                ("Write speed", disk.write_rate.map_or("???".into(), rate_text)),
+            ],
+        );
+
+        ui.add_space(4.0);
+        stats_ui(
+            ui,
+            &[
+                ("Capacity", facts.map_or("???".into(), |facts| capacity_text(facts.size))),
+                ("Type", facts.map_or("???", |facts| kind_text(facts.kind)).to_string()),
+                (
+                    "Temperature",
+                    disk.temperature
+                        .map_or("???".into(), |t| format!("{:.0}\u{b0}C", t.as_f32())),
+                ),
+            ],
+        );
+
+        if !disk.volumes.is_empty() {
+            ui.add_space(12.0);
+            ui.strong("Volumes");
+            ui.add_space(4.0);
+        }
+        for volume in &disk.volumes {
+            let used = volume.used.as_u64() as f32;
+            let total = volume.total.as_u64().max(1) as f32;
+            ui.label(format!(
+                "{}  ({})",
+                volume.mount.display(),
+                volume.file_system
+            ));
+            // The empty part of a progress bar is drawn with `extreme_bg_color`.
+            ui.scope(|ui| {
+                ui.visuals_mut().extreme_bg_color = VOLUME_EMPTY_COLOR;
+                ui.add(
+                    egui::ProgressBar::new(used / total)
+                        .fill(DISK_COLOR.gamma_multiply(0.55))
+                        .text(format!(
+                            "{} / {}",
+                            capacity_text(volume.used),
+                            capacity_text(volume.total)
+                        )),
+                );
+            });
+            ui.add_space(4.0);
+        }
+    }
+
     fn gpu_ui(&self, info: &HardwareInfo, index: usize, ui: &mut egui::Ui) {
         let Some(Some(gpu)) = info.gpus().get(index) else {
             return;
@@ -391,6 +537,39 @@ impl PerformanceView {
                 ),
             ],
         );
+    }
+}
+
+fn kind_text(kind: DiskKind) -> &'static str {
+    match kind {
+        DiskKind::Nvme => "NVMe",
+        DiskKind::Ssd => "SSD",
+        DiskKind::Hdd => "HDD",
+        DiskKind::Unknown => "",
+    }
+}
+
+/// Decimal units, as disks are sold: "500.1 GB", "2.0 TB".
+fn capacity_text(size: Bytes) -> String {
+    let bytes = size.as_u64() as f64;
+    if bytes >= 1e12 {
+        format!("{:.1} TB", bytes / 1e12)
+    } else {
+        format!("{:.1} GB", bytes / 1e9)
+    }
+}
+
+/// Transfer rate in bytes per second, "12.3 MB/s".
+fn rate_text(rate: Bytes) -> String {
+    let bytes = rate.as_u64() as f64;
+    if bytes >= 1e9 {
+        format!("{:.1} GB/s", bytes / 1e9)
+    } else if bytes >= 1e6 {
+        format!("{:.1} MB/s", bytes / 1e6)
+    } else if bytes >= 1e3 {
+        format!("{:.0} KB/s", bytes / 1e3)
+    } else {
+        format!("{bytes:.0} B/s")
     }
 }
 

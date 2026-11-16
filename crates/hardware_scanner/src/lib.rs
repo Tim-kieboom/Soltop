@@ -1,16 +1,19 @@
 use std::time::Duration;
 
 use crate::{
+    disk_scanner::DiskScanner,
     gpu_scanner::NvidiaScanner,
     model::{
-        CpuInfo, GpuInfo, Percent, Process, RamInfo, ScanError, ScanResult, StaticInfo, safe_div,
+        CpuInfo, DiskInfo, GpuInfo, Percent, Process, RamInfo, ScanError, ScanResult, StaticInfo, safe_div,
     },
     system_scanner::SystemScanner,
 };
 
+mod disk_scanner;
 mod gpu_scanner;
 pub mod model;
 mod sensor_table;
+mod sysfs;
 mod system_scanner;
 
 #[derive(Debug)]
@@ -19,6 +22,7 @@ pub struct HardwareInfo {
     ram: RamInfo,
     processes: Vec<Process>,
     gpus: Vec<Option<GpuInfo>>,
+    disks: Vec<DiskInfo>,
     errors: Vec<ScanError>,
 }
 impl HardwareInfo {
@@ -27,6 +31,7 @@ impl HardwareInfo {
             ram: RamInfo::default(),
             cpu: CpuInfo::default(),
             gpus: vec![],
+            disks: vec![],
             errors: vec![],
             processes: vec![],
         }
@@ -42,6 +47,10 @@ impl HardwareInfo {
 
     pub fn gpus(&self) -> &[Option<GpuInfo>] {
         &self.gpus
+    }
+
+    pub fn disks(&self) -> &[DiskInfo] {
+        &self.disks
     }
 
     pub fn processes(&self) -> &[Process] {
@@ -62,6 +71,7 @@ impl HardwareInfo {
 
     fn clear(&mut self) {
         self.gpus.clear();
+        self.disks.clear();
         self.errors.clear();
         self.processes.clear();
         self.cpu.core_usage.clear();
@@ -81,11 +91,13 @@ impl Default for HardwareInfo {
 pub struct Hardwarescanner {
     cpu_rams: SystemScanner,
     gpus: Option<NvidiaScanner>,
+    disks: DiskScanner,
 }
 impl Hardwarescanner {
     pub fn new() -> ScanResult<Self> {
         Ok(Self {
             gpus: None,
+            disks: DiskScanner::new(),
             cpu_rams: SystemScanner::new()?,
         })
     }
@@ -104,6 +116,7 @@ impl Hardwarescanner {
                 .as_ref()
                 .map(|gpus| gpus.static_infos())
                 .unwrap_or_default(),
+            disks: self.disks.static_infos(),
         }
     }
 
@@ -132,6 +145,7 @@ impl Hardwarescanner {
         if let Some(gpu_scanner) = &self.gpus {
             self.scan_gpu(info, gpu_scanner)
         }
+        self.disks.scan(&mut info.disks);
     }
 
     fn scan_ram(&self, info: &mut HardwareInfo) {
