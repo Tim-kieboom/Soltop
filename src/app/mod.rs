@@ -32,8 +32,11 @@ pub struct App {
 }
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.menu_ui(ui);
-        ui.separator();
+        egui::Panel::left("tabs")
+            .resizable(false)
+            .exact_size(140.0)
+            .show(ui, |ui| self.menu_ui(ui));
+        self.notices_ui(ui);
         match self.tab {
             Tab::Processes => self.processes_ui(ui),
             Tab::Preformance => self.performace_ui(ui),
@@ -60,10 +63,23 @@ impl App {
     }
 
     fn menu_ui(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
+        ui.add_space(4.0);
+        ui.vertical(|ui| {
             ui.selectable_value(&mut self.tab, Tab::Processes, "Processes");
-            ui.selectable_value(&mut self.tab, Tab::Preformance, "Preformance");
+            ui.selectable_value(&mut self.tab, Tab::Preformance, "Performance");
         });
+    }
+
+    fn notices_ui(&self, ui: &mut egui::Ui) {
+        if let Some(fatal) = &self.fatal {
+            ui.colored_label(ui.visuals().error_fg_color, format!("Error: {fatal}"));
+        }
+        if let Some(note) = &self.gpu_note {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                format!("GPU unavailable: {note}"),
+            );
+        }
     }
 
     fn processes_ui(&mut self, ui: &mut egui::Ui) {

@@ -43,7 +43,7 @@ impl ProcessView {
                 .sort_by(|a, b| cmp(&a.memory, &b.memory, descending)),
             SortKey::Gpu => info
                 .processes_mut()
-                .sort_by(|a, b| partial_cmp(&a.cpu_usage, &b.cpu_usage, descending)),
+                .sort_by(|a, b| partial_cmp(&a.gpu_usage, &b.gpu_usage, descending)),
             SortKey::Name => info
                 .processes_mut()
                 .sort_by(|a, b| cmp(&a.file_name(), &b.file_name(), descending)),
@@ -78,7 +78,10 @@ impl ProcessView {
             self.header_col_ui(ui, info, ram, "RAM", SortKey::Ram);
         });
         header.col(|ui| {
-            let gpu = format!("{:.2}%", total_gpu(info));
+            let gpu = match total_gpu(info) {
+                Some(usage) => format!("{usage:.0}%"),
+                None => "__".to_string(),
+            };
             self.header_col_ui(ui, info, gpu, "GPU", SortKey::Gpu);
         });
     }
@@ -100,11 +103,9 @@ impl ProcessView {
                 ui.label(format!("{:.2} gb", process.memory.to_gb(2).as_f32()));
             });
             row.col(|ui| {
-                let label = match process.gpu_memory {
-                    Some(memory) => {
-                        format!("{:.2} gb", memory.to_gb(2).as_f32())
-                    }
-                    _ => format!("__"),
+                let label = match process.gpu_usage {
+                    Some(usage) => format!("{:.0}%", usage.as_f32()),
+                    None => "__".to_string(),
                 };
                 ui.label(label);
             });
@@ -162,15 +163,21 @@ fn total_ram(info: &HardwareInfo) -> f32 {
     info.ram().total.unwrap_or_default().to_gb(2).as_f32()
 }
 
-fn total_gpu(info: &HardwareInfo) -> f32 {
-    let sum = info
+/// Average GPU load across the GPUs that reported one; `None` when no GPU did.
+fn total_gpu(info: &HardwareInfo) -> Option<f32> {
+    let loads: Vec<f32> = info
         .gpus()
         .iter()
-        .flat_map(|gpu| gpu.as_ref().map(|gpu| gpu.memory_usage).flatten())
+        .flatten()
+        .filter_map(|gpu| gpu.gpu)
         .map(|usage| usage.as_f32())
-        .sum::<f32>();
+        .collect();
 
-    sum / info.gpus().len() as f32
+    if loads.is_empty() {
+        None
+    } else {
+        Some(loads.iter().sum::<f32>() / loads.len() as f32)
+    }
 }
 
 fn cmp<T: Ord>(a: &T, b: &T, descending: bool) -> Ordering {
