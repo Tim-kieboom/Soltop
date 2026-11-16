@@ -16,6 +16,7 @@ pub type CpuRamResult<T = ()> = Result<T, sysinfo::Error>;
 const HWMON_DIR: &str = "/sys/class/hwmon";
 const THERMAL_DIR: &str = "/sys/class/thermal";
 const CPU0_DIR: &str = "/sys/devices/system/cpu/cpu0";
+const MEMINFO: &str = "/proc/meminfo";
 
 pub struct SystemScanner {
     system: sysinfo::System,
@@ -117,6 +118,23 @@ impl SystemScanner {
     }
     pub fn ram_total(&self) -> Bytes {
         Bytes::new(self.system.total_memory())
+    }
+    pub fn ram_available(&self) -> Bytes {
+        Bytes::new(self.system.available_memory())
+    }
+    pub fn swap_used(&self) -> Bytes {
+        Bytes::new(self.system.used_swap())
+    }
+    pub fn swap_total(&self) -> Bytes {
+        Bytes::new(self.system.total_swap())
+    }
+
+    /// Page cache plus buffers (what Task Manager calls "Cached"); `None` if /proc/meminfo is unreadable.
+    pub fn ram_cached(&self) -> Option<Bytes> {
+        let meminfo = fs::read_to_string(MEMINFO).ok()?;
+        let cached = meminfo_kib(&meminfo, "Cached:")?;
+        let buffers = meminfo_kib(&meminfo, "Buffers:").unwrap_or(0);
+        Some(Bytes::new((cached + buffers) * 1024))
     }
 
     fn to_process(
@@ -276,6 +294,17 @@ fn parse_cache_size(text: &str) -> Option<u64> {
         return mib.parse::<u64>().ok().map(|n| n * 1024 * 1024);
     }
     text.parse().ok()
+}
+
+/// Value in kiB of a `/proc/meminfo` line such as `Cached:   1234 kB`.
+fn meminfo_kib(meminfo: &str, key: &str) -> Option<u64> {
+    meminfo
+        .lines()
+        .find_map(|line| line.strip_prefix(key))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
 }
 
 fn read_khz_as_mhz(path: &Path) -> Option<Mhz> {

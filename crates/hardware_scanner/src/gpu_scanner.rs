@@ -1,14 +1,16 @@
 use std::collections::HashMap;
 
 use nvml_wrapper::{
-    Device, Nvml, enum_wrappers::device::TemperatureSensor, enums::device::UsedGpuMemory,
+    Device, Nvml,
+    enum_wrappers::device::{Clock, TemperatureSensor},
+    enums::device::UsedGpuMemory,
     error::NvmlError,
     struct_wrappers::device::{ProcessInfo, ProcessUtilizationSample},
 };
 
 use crate::{
     ScanError,
-    model::{Bytes, Degree, GpuNumbers, Percent},
+    model::{Bytes, Degree, GpuNumbers, GpuStatic, Mhz, Percent, Watts},
 };
 
 pub type GpuResult<T = ()> = Result<T, NvmlError>;
@@ -115,6 +117,21 @@ impl NvidiaScanner {
         merge_utilization(&mut self.processes, gpu_number, newest);
     }
 
+    pub fn driver_version(&self) -> Option<String> {
+        self.nvml.sys_driver_version().ok()
+    }
+
+    /// Static facts per GPU index; `None` for a GPU that could not be opened.
+    pub fn static_infos(&self) -> Vec<Option<GpuStatic>> {
+        let count = self.gpu_count().unwrap_or(0);
+        (0..count)
+            .map(|i| {
+                let device = self.get_gpu(i as u32).ok()?;
+                Some(NvidiaGpu(device).static_info())
+            })
+            .collect()
+    }
+
     fn get_gpu(&self, index: u32) -> GpuResult<Device<'_>> {
         self.nvml.device_by_index(index)
     }
@@ -128,11 +145,31 @@ impl<'a> NvidiaGpu<'a> {
         info.memory_usage = Some(Percent::new(
             (memory.used as f32 / memory.total as f32) * 100.0,
         ));
+        info.memory_used = Some(Bytes::new(memory.used));
         info.gpu = Some(
             self.0
                 .utilization_rates()
                 .map(|u| Percent::new(u.gpu as f32))?,
         );
+
+        // Not every GPU supports every metric (fan on laptops, encoder on some), so a
+        // failing query only leaves that field empty instead of failing the whole scan.
+        info.core_clock = self.0.clock_info(Clock::Graphics).ok().map(|m| Mhz::new(m as u64));
+        info.memory_clock = self.0.clock_info(Clock::Memory).ok().map(|m| Mhz::new(m as u64));
+        info.power = self.0.power_usage().ok().map(milliwatts);
+        info.fan = self.0.fan_speed(0).ok().map(|p| Percent::new(p as f32));
+        info.encoder = self
+            .0
+            .encoder_utilization()
+            .ok()
+            .map(|u| Percent::new(u.utilization as f32));
+        info.decoder = self
+            .0
+            .decoder_utilization()
+            .ok()
+            .map(|u| Percent::new(u.utilization as f32));
+        info.pcie_gen = self.0.current_pcie_link_gen().ok();
+        info.pcie_width = self.0.current_pcie_link_width().ok();
 
         info.temperature = Some(
             self.0
@@ -142,6 +179,21 @@ impl<'a> NvidiaGpu<'a> {
 
         Ok(())
     }
+}
+
+impl<'a> NvidiaGpu<'a> {
+    pub fn static_info(&self) -> GpuStatic {
+        GpuStatic {
+            name: self.0.name().unwrap_or_default().into(),
+            power_limit: self.0.enforced_power_limit().ok().map(milliwatts),
+            pcie_max_gen: self.0.max_pcie_link_gen().ok(),
+            pcie_max_width: self.0.max_pcie_link_width().ok(),
+        }
+    }
+}
+
+fn milliwatts(mw: u32) -> Watts {
+    Watts::new(mw as f32 / 1000.0)
 }
 
 impl GpuProcess {

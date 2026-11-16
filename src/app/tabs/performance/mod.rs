@@ -1,7 +1,7 @@
 use eframe::egui::{self, Align2, Color32, FontId, Mesh, Pos2, Rect, Sense, Shape, Stroke};
 use hardware_scanner::{
     HardwareInfo,
-    model::{AsF64, Bytes, Gb, GpuInfo, Mhz, Percent, StaticInfo},
+    model::{AsF64, Bytes, Gb, Mhz, Percent, StaticInfo, Watts},
 };
 
 use crate::app::tabs::performance::history::History;
@@ -281,29 +281,34 @@ impl PerformanceView {
         let ram = info.ram();
         let used = ram.used.unwrap_or_default();
         let total = ram.total.unwrap_or_default();
-        let available = total.as_u64().saturating_sub(used.as_u64());
-        let gb = |bytes: u64| {
-            format!(
-                "{:.1} GB",
-                hardware_scanner::model::Bytes::new(bytes).to_gb(1).as_f32()
-            )
-        };
+        let available = ram
+            .available
+            .unwrap_or_else(|| Bytes::new(total.as_u64().saturating_sub(used.as_u64())));
 
-        section_header(ui, "Memory", &gb(total.as_u64()));
+        section_header(ui, "Memory", &gb_text(ram.total));
         self.ram_history.plot(ui, "plot_ram", "RAM", RAM_COLOR);
 
         ui.add_space(8.0);
         stats_ui(
             ui,
             &[
-                ("In use", gb(used.as_u64())),
-                ("Available", gb(available)),
-                ("Total", gb(total.as_u64())),
+                ("In use", gb_text(ram.used)),
+                ("Available", gb_text(Some(available))),
+                ("Cached", gb_text(ram.cached)),
                 (
                     "Temperature",
                     ram.temperature
                         .map_or("???".into(), |t| format!("{:.0}\u{b0}C", t.as_f32())),
                 ),
+            ],
+        );
+
+        ui.add_space(4.0);
+        stats_ui(
+            ui,
+            &[
+                ("Swap in use", swap_text(ram.swap_used, ram.swap_total)),
+                ("Total", gb_text(ram.total)),
             ],
         );
     }
@@ -315,8 +320,17 @@ impl PerformanceView {
         let Some(history) = self.gpu_histories.get(index) else {
             return;
         };
+        let facts = self
+            .static_info
+            .gpus
+            .get(index)
+            .and_then(|facts| facts.as_ref());
 
-        section_header(ui, &format!("GPU {index}"), &percent_text(gpu.gpu));
+        let name = facts
+            .map(|facts| &*facts.name)
+            .filter(|name| !name.is_empty())
+            .unwrap_or("");
+        section_header(ui, &format!("GPU {index}"), name);
         history
             .load
             .plot(ui, format!("plot_gpu_{index}"), "GPU", GPU_COLOR);
@@ -328,33 +342,87 @@ impl PerformanceView {
             .plot(ui, format!("plot_gpu_mem_{index}"), "VRAM", GPU_COLOR);
 
         ui.add_space(8.0);
-        stats_ui(ui, &gpu_stats(gpu));
+        let power_limit = facts.and_then(|facts| facts.power_limit);
+        stats_ui(
+            ui,
+            &[
+                ("Utilization", percent_text(gpu.gpu)),
+                (
+                    "Memory",
+                    format!("{} / {}", gb_text(gpu.memory_used), gb_text(gpu.memory_total)),
+                ),
+                (
+                    "Temperature",
+                    gpu.temperature
+                        .map_or("???".into(), |t| format!("{:.0}\u{b0}C", t.as_f32())),
+                ),
+                ("Power", power_text(gpu.power, power_limit)),
+                ("Fan", gpu.fan.map_or("n/a".into(), |p| percent_text(Some(p)))),
+            ],
+        );
+
+        ui.add_space(4.0);
+        stats_ui(
+            ui,
+            &[
+                ("Core clock", gpu.core_clock.map_or("???".into(), mhz_text)),
+                ("Memory clock", gpu.memory_clock.map_or("???".into(), mhz_text)),
+                ("Encoder", gpu.encoder.map_or("???".into(), |p| percent_text(Some(p)))),
+                ("Decoder", gpu.decoder.map_or("???".into(), |p| percent_text(Some(p)))),
+            ],
+        );
+
+        ui.add_space(4.0);
+        let (max_gen, max_width) = facts.map_or((None, None), |facts| {
+            (facts.pcie_max_gen, facts.pcie_max_width)
+        });
+        stats_ui(
+            ui,
+            &[
+                ("PCIe now", pcie_text(gpu.pcie_gen, gpu.pcie_width)),
+                ("PCIe max", pcie_text(max_gen, max_width)),
+                (
+                    "Driver",
+                    self.static_info
+                        .gpu_driver
+                        .as_deref()
+                        .unwrap_or("???")
+                        .to_string(),
+                ),
+            ],
+        );
     }
 }
 
-fn gpu_stats(gpu: &GpuInfo) -> Vec<(&'static str, String)> {
-    let total = gpu.memory_total;
-    let used_gb = match (gpu.memory_usage, total) {
-        (Some(usage), Some(total)) => Some(usage.as_f32() / 100.0 * total.to_gb(2).as_f32()),
-        _ => None,
-    };
+fn gb_text(size: Option<Bytes>) -> String {
+    size.map_or("???".into(), |size| format!("{:.1} GB", size.to_gb(1).as_f32()))
+}
 
-    vec![
-        ("Utilization", percent_text(gpu.gpu)),
-        (
-            "Memory used",
-            used_gb.map_or("???".into(), |gb| format!("{gb:.1} GB")),
-        ),
-        (
-            "Memory total",
-            total.map_or("???".into(), |t| format!("{:.1} GB", t.to_gb(1).as_f32())),
-        ),
-        (
-            "Temperature",
-            gpu.temperature
-                .map_or("???".into(), |t| format!("{:.0}\u{b0}C", t.as_f32())),
-        ),
-    ]
+fn swap_text(used: Option<Bytes>, total: Option<Bytes>) -> String {
+    match (used, total) {
+        (_, Some(total)) if total.as_u64() == 0 => "None".into(),
+        (Some(used), Some(total)) => format!("{} / {}", gb_text(Some(used)), gb_text(Some(total))),
+        _ => "???".into(),
+    }
+}
+
+fn mhz_text(clock: Mhz) -> String {
+    format!("{} MHz", clock.as_u64())
+}
+
+fn power_text(power: Option<Watts>, limit: Option<Watts>) -> String {
+    match (power, limit) {
+        (Some(power), Some(limit)) => format!("{:.0} / {:.0} W", power.as_f32(), limit.as_f32()),
+        (Some(power), None) => format!("{:.0} W", power.as_f32()),
+        _ => "???".into(),
+    }
+}
+
+fn pcie_text(generation: Option<u32>, width: Option<u32>) -> String {
+    match (generation, width) {
+        (Some(generation), Some(width)) => format!("Gen {generation} x{width}"),
+        _ => "???".into(),
+    }
 }
 
 fn ghz_text(clock: Mhz) -> String {

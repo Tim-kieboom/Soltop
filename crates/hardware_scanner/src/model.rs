@@ -48,6 +48,10 @@ newtype!(
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
     pub struct Mhz(u64) { as_u64 }
 );
+newtype!(
+    #[derive(Debug, Clone, Copy, Default, PartialEq, PartialOrd)]
+    pub struct Watts(f32) { as_f32 }
+);
 
 pub trait AsF64 {
     fn as_f64(&self) -> f64;
@@ -86,6 +90,17 @@ pub struct CpuInfo {
 #[derive(Debug, Default, Clone)]
 pub struct StaticInfo {
     pub cpu: CpuStatic,
+    pub gpu_driver: Option<Box<str>>,
+    /// One entry per GPU index, `None` when that GPU could not be queried.
+    pub gpus: Vec<Option<GpuStatic>>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct GpuStatic {
+    pub name: Box<str>,
+    pub power_limit: Option<Watts>,
+    pub pcie_max_gen: Option<u32>,
+    pub pcie_max_width: Option<u32>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -112,6 +127,11 @@ pub struct CpuCache {
 pub struct RamInfo {
     pub used: Option<Bytes>,
     pub total: Option<Bytes>,
+    pub available: Option<Bytes>,
+    /// Page cache plus buffers, from /proc/meminfo.
+    pub cached: Option<Bytes>,
+    pub swap_used: Option<Bytes>,
+    pub swap_total: Option<Bytes>,
     pub temperature: Option<Degree>,
 }
 
@@ -119,8 +139,18 @@ pub struct RamInfo {
 pub struct GpuInfo {
     pub gpu: Option<Percent>,
     pub memory_usage: Option<Percent>,
+    pub memory_used: Option<Bytes>,
     pub memory_total: Option<Bytes>,
     pub temperature: Option<Degree>,
+    pub core_clock: Option<Mhz>,
+    pub memory_clock: Option<Mhz>,
+    pub power: Option<Watts>,
+    /// `None` on GPUs without a controllable fan (many laptops).
+    pub fan: Option<Percent>,
+    pub encoder: Option<Percent>,
+    pub decoder: Option<Percent>,
+    pub pcie_gen: Option<u32>,
+    pub pcie_width: Option<u32>,
 }
 
 #[derive(Debug)]

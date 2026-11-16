@@ -94,6 +94,16 @@ impl Hardwarescanner {
     pub fn static_info(&self) -> StaticInfo {
         StaticInfo {
             cpu: self.cpu_rams.cpu_static(),
+            gpu_driver: self
+                .gpus
+                .as_ref()
+                .and_then(|gpus| gpus.driver_version())
+                .map(Into::into),
+            gpus: self
+                .gpus
+                .as_ref()
+                .map(|gpus| gpus.static_infos())
+                .unwrap_or_default(),
         }
     }
 
@@ -128,6 +138,10 @@ impl Hardwarescanner {
         info.ram.used = Some(self.cpu_rams.ram_usage());
         info.ram.total = Some(self.cpu_rams.ram_total());
         info.ram.temperature = self.cpu_rams.ram_temprature();
+        info.ram.available = Some(self.cpu_rams.ram_available());
+        info.ram.cached = self.cpu_rams.ram_cached();
+        info.ram.swap_used = Some(self.cpu_rams.swap_used());
+        info.ram.swap_total = Some(self.cpu_rams.swap_total());
     }
 
     fn scan_cpu(&self, info: &mut HardwareInfo) {
