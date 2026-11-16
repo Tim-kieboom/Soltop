@@ -7,7 +7,10 @@ use std::{
     time::Duration,
 };
 
-use hardware_scanner::{HardwareInfo, Hardwarescanner, model::ScanError};
+use hardware_scanner::{
+    HardwareInfo, Hardwarescanner,
+    model::{ScanError, StaticInfo},
+};
 
 use crate::error::{ScanThreadError, ScanThreadResult, ThreadJoinError};
 
@@ -17,7 +20,11 @@ type Receiver = sync::mpsc::Receiver<Message>;
 #[derive(Debug)]
 pub enum Message {
     Info(HardwareInfo),
-    First(HardwareInfo),
+    /// Sent once: the first scan plus the hardware facts that never change.
+    First {
+        info: HardwareInfo,
+        static_info: StaticInfo,
+    },
     StartupError(ScanError),
     GpuUnavailble(ScanError),
 }
@@ -53,7 +60,8 @@ fn run<F: Fn() + Send + 'static>(sender: Sender, scan_interval: Duration, redraw
     let mut scanner = match Hardwarescanner::new() {
         Ok(val) => val,
         Err(err) => {
-            send(&sender, Message::StartupError(err));
+            send_blocking(&sender, Message::StartupError(err));
+            redraw_callback();
             return;
         }
     };
@@ -61,14 +69,22 @@ fn run<F: Fn() + Send + 'static>(sender: Sender, scan_interval: Duration, redraw
     let mut gpu_error = None;
     let mut info = scanner.initinalize(&mut gpu_error);
     if let Some(err) = gpu_error {
-        if send(&sender, Message::GpuUnavailble(err)) {
+        if send_blocking(&sender, Message::GpuUnavailble(err)) {
             return;
         }
+        // The UI only drains the channel when it repaints.
+        redraw_callback();
     }
 
-    if send(&sender, Message::First(take(&mut info))) {
+    let static_info = scanner.static_info();
+    let first = Message::First {
+        info: take(&mut info),
+        static_info,
+    };
+    if send_blocking(&sender, first) {
         return;
     }
+    redraw_callback();
 
     loop {
         scanner.scan(&mut info);
@@ -80,6 +96,14 @@ fn run<F: Fn() + Send + 'static>(sender: Sender, scan_interval: Duration, redraw
     }
 }
 
+/// For one-shot messages that must arrive: waits for room in the channel.
+/// Returns true when the receiver is gone.
+fn send_blocking(sender: &Sender, message: Message) -> bool {
+    sender.send(message).is_err()
+}
+
+/// For per-tick updates: if the UI hasn't caught up the tick is dropped, the next one replaces it.
+/// Returns true when the receiver is gone.
 fn send(sender: &Sender, message: Message) -> bool {
     match sender.try_send(message) {
         Ok(_) | Err(TrySendError::Full(_)) => false,

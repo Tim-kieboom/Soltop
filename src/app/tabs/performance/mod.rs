@@ -1,7 +1,7 @@
 use eframe::egui::{self, Align2, Color32, FontId, Mesh, Pos2, Rect, Sense, Shape, Stroke};
 use hardware_scanner::{
     HardwareInfo,
-    model::{AsF64, Gb, GpuInfo, Percent},
+    model::{AsF64, Bytes, Gb, GpuInfo, Mhz, Percent, StaticInfo},
 };
 
 use crate::app::tabs::performance::history::History;
@@ -51,6 +51,7 @@ struct Card {
 
 pub struct PerformanceView {
     selected: Device,
+    static_info: StaticInfo,
     cpu_history: History<Percent>,
     core_histories: Vec<History<Percent>>,
     ram_history: History<Gb>,
@@ -60,6 +61,7 @@ impl PerformanceView {
     pub fn new() -> Self {
         Self {
             selected: Device::default(),
+            static_info: StaticInfo::default(),
             core_histories: Vec::new(),
             ram_history: History::new(1000, 0.0),
             cpu_history: History::new(1000, 100.0),
@@ -67,10 +69,12 @@ impl PerformanceView {
         }
     }
 
-    /// Called once with the first scan: the RAM graph's upper bound is the machine's total RAM.
-    pub fn load_first_info(&mut self, info: &HardwareInfo) {
+    /// Called once with the first scan: the RAM graph's upper bound is the machine's total RAM,
+    /// and the static hardware facts are kept for the detail views.
+    pub fn load_first_info(&mut self, info: &HardwareInfo, static_info: StaticInfo) {
         let ram = info.ram().total.unwrap_or_default().to_gb(5);
         self.ram_history.set_max(ram.as_f64());
+        self.static_info = static_info;
     }
 
     /// Records one scan into the history graphs.
@@ -197,7 +201,9 @@ impl PerformanceView {
 
     fn cpu_ui(&self, info: &HardwareInfo, ui: &mut egui::Ui) {
         let cpu = info.cpu();
-        section_header(ui, "CPU", &percent_text(cpu.total_usage));
+        let facts = &self.static_info.cpu;
+        let name: &str = if facts.name.is_empty() { "CPU" } else { &facts.name };
+        section_header(ui, "CPU", name);
         self.cpu_history.plot(ui, "plot_cpu", "CPU", CPU_COLOR);
 
         ui.add_space(8.0);
@@ -205,12 +211,39 @@ impl PerformanceView {
             ui,
             &[
                 ("Utilization", percent_text(cpu.total_usage)),
-                ("Cores", cpu.core_usage.len().to_string()),
+                ("Speed", cpu.frequency.map_or("???".into(), ghz_text)),
+                ("Processes", info.processes().len().to_string()),
+                ("Up time", cpu.uptime.map_or("???".into(), uptime_text)),
                 (
                     "Temperature",
                     cpu.temperature
                         .map_or("???".into(), |t| format!("{:.0}\u{b0}C", t.as_f32())),
                 ),
+            ],
+        );
+
+        ui.add_space(4.0);
+        stats_ui(
+            ui,
+            &[
+                ("Base speed", facts.base_clock.map_or("???".into(), ghz_text)),
+                ("Max speed", facts.max_clock.map_or("???".into(), ghz_text)),
+                (
+                    "Cores",
+                    facts.physical_cores.map_or("???".into(), |n| n.to_string()),
+                ),
+                ("Logical processors", facts.logical_cores.to_string()),
+            ],
+        );
+
+        ui.add_space(4.0);
+        stats_ui(
+            ui,
+            &[
+                ("L1 data cache", cache_text(facts.cache.l1_data)),
+                ("L1 instruction cache", cache_text(facts.cache.l1_instruction)),
+                ("L2 cache", cache_text(facts.cache.l2)),
+                ("L3 cache", cache_text(facts.cache.l3)),
             ],
         );
 
@@ -322,6 +355,35 @@ fn gpu_stats(gpu: &GpuInfo) -> Vec<(&'static str, String)> {
                 .map_or("???".into(), |t| format!("{:.0}\u{b0}C", t.as_f32())),
         ),
     ]
+}
+
+fn ghz_text(clock: Mhz) -> String {
+    format!("{:.2} GHz", clock.as_u64() as f32 / 1000.0)
+}
+
+/// Binary units, as the kernel reports cache sizes ("32 KB", "32 MB").
+fn cache_text(size: Option<Bytes>) -> String {
+    let Some(size) = size else {
+        return "???".into();
+    };
+    let bytes = size.as_u64();
+    if bytes >= 1024 * 1024 {
+        format!("{:.0} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{} KB", bytes / 1024)
+    }
+}
+
+/// "d:hh:mm:ss", like Task Manager's Up time.
+fn uptime_text(uptime: std::time::Duration) -> String {
+    let secs = uptime.as_secs();
+    format!(
+        "{}:{:02}:{:02}:{:02}",
+        secs / 86_400,
+        secs % 86_400 / 3_600,
+        secs % 3_600 / 60,
+        secs % 60
+    )
 }
 
 fn percent_text(usage: Option<Percent>) -> String {

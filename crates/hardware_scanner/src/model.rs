@@ -1,4 +1,4 @@
-use std::{ffi::OsStr, fmt::Debug, path::Path};
+use std::{ffi::OsStr, fmt::Debug, path::Path, time::Duration};
 
 use nvml_wrapper::error::NvmlError;
 use thiserror::Error;
@@ -44,6 +44,10 @@ newtype!(
     #[derive(Debug, Clone, Copy, Default, PartialEq, PartialOrd)]
     pub struct Percent(f32) { as_f32 }
 );
+newtype!(
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct Mhz(u64) { as_u64 }
+);
 
 pub trait AsF64 {
     fn as_f64(&self) -> f64;
@@ -72,6 +76,36 @@ pub struct CpuInfo {
     pub core_usage: Vec<Percent>,
     pub temperature: Option<Degree>,
     pub total_usage: Option<Percent>,
+    /// Average current clock over all cores.
+    pub frequency: Option<Mhz>,
+    pub uptime: Option<Duration>,
+}
+
+/// Hardware facts that never change while the program runs.
+/// Collected once at startup and sent along with the first scan.
+#[derive(Debug, Default, Clone)]
+pub struct StaticInfo {
+    pub cpu: CpuStatic,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct CpuStatic {
+    pub name: Box<str>,
+    pub vendor: Box<str>,
+    pub physical_cores: Option<usize>,
+    pub logical_cores: usize,
+    pub cache: CpuCache,
+    pub base_clock: Option<Mhz>,
+    pub max_clock: Option<Mhz>,
+}
+
+/// L1 is per core, L2 and L3 as reported for cpu0 (L3 is usually shared).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CpuCache {
+    pub l1_data: Option<Bytes>,
+    pub l1_instruction: Option<Bytes>,
+    pub l2: Option<Bytes>,
+    pub l3: Option<Bytes>,
 }
 
 #[derive(Debug, Default)]

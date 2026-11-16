@@ -124,8 +124,8 @@ impl App {
             };
 
             match message {
-                Message::First(info) => {
-                    self.performance_view.load_first_info(&info);
+                Message::First { info, static_info } => {
+                    self.performance_view.load_first_info(&info, static_info);
                     self.load_new_info(info);
                 }
                 Message::Info(info) => {

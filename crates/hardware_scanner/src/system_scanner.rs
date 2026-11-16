@@ -7,7 +7,7 @@ use std::{
 use crate::{
     ScanError,
     gpu_scanner::{GpuProcess, GpuResult, NvidiaScanner},
-    model::{Bytes, Degree, Percent, safe_div},
+    model::{Bytes, CpuCache, CpuStatic, Degree, Mhz, Percent, safe_div},
     sensor_table::{self, HwmonRule, MAX_VALID_C, MIN_VALID_C, TargetRules},
 };
 
@@ -15,6 +15,7 @@ pub type CpuRamResult<T = ()> = Result<T, sysinfo::Error>;
 
 const HWMON_DIR: &str = "/sys/class/hwmon";
 const THERMAL_DIR: &str = "/sys/class/thermal";
+const CPU0_DIR: &str = "/sys/devices/system/cpu/cpu0";
 
 pub struct SystemScanner {
     system: sysinfo::System,
@@ -37,6 +38,7 @@ impl SystemScanner {
 
     pub fn scan(&mut self) {
         self.system.refresh_cpu_usage();
+        self.system.refresh_cpu_frequency();
         self.system.refresh_memory();
         self.system
             .refresh_processes(sysinfo::ProcessesToUpdate::All, true);
@@ -63,6 +65,43 @@ impl SystemScanner {
 
     pub fn cpus(&self) -> impl Iterator<Item = Cpu<'_>> {
         self.system.cpus().iter().map(Cpu)
+    }
+
+    /// Average current clock over the cores that report one.
+    pub fn cpu_frequency(&self) -> Option<Mhz> {
+        let clocks: Vec<u64> = self
+            .system
+            .cpus()
+            .iter()
+            .map(|cpu| cpu.frequency())
+            .filter(|&mhz| mhz > 0)
+            .collect();
+
+        if clocks.is_empty() {
+            return None;
+        }
+        Some(Mhz::new(clocks.iter().sum::<u64>() / clocks.len() as u64))
+    }
+
+    pub fn uptime(&self) -> Option<std::time::Duration> {
+        sysinfo::System::uptime().ok().map(std::time::Duration::from_secs)
+    }
+
+    /// Facts that don't change at runtime. Call after the first scan so sysinfo has the CPU list.
+    pub fn cpu_static(&self) -> CpuStatic {
+        let cpus = self.system.cpus();
+        let first = cpus.first();
+        let cpu_dir = Path::new(CPU0_DIR);
+
+        CpuStatic {
+            name: first.map_or("", |cpu| cpu.brand().trim()).into(),
+            vendor: first.map_or("", |cpu| cpu.vendor_id().trim()).into(),
+            physical_cores: sysinfo::System::physical_core_count().ok(),
+            logical_cores: cpus.len(),
+            cache: read_cpu_cache(cpu_dir),
+            base_clock: read_khz_as_mhz(&cpu_dir.join("cpufreq/base_frequency")),
+            max_clock: read_khz_as_mhz(&cpu_dir.join("cpufreq/cpuinfo_max_freq")),
+        }
     }
 
     pub fn cpu_temprature(&self) -> Option<Degree> {
@@ -195,6 +234,55 @@ fn thermal_zone_sensors(zone_type: &str) -> Vec<PathBuf> {
         .map(|dir| dir.join("temp"))
         .filter(|path| path.exists())
         .collect()
+}
+
+/// Reads `cache/index*/{level,type,size}` of one CPU.
+fn read_cpu_cache(cpu_dir: &Path) -> CpuCache {
+    let mut cache = CpuCache::default();
+
+    for dir in read_dir_paths(cpu_dir.join("cache")) {
+        let is_index = dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("index"));
+        if !is_index {
+            continue;
+        }
+
+        let level = read_trimmed(&dir.join("level")).and_then(|v| v.parse::<u8>().ok());
+        let kind = read_trimmed(&dir.join("type"));
+        let size = read_trimmed(&dir.join("size"))
+            .and_then(|v| parse_cache_size(&v))
+            .map(Bytes::new);
+
+        match (level, kind.as_deref()) {
+            (Some(1), Some("Data")) => cache.l1_data = size,
+            (Some(1), Some("Instruction")) => cache.l1_instruction = size,
+            (Some(2), _) => cache.l2 = size,
+            (Some(3), _) => cache.l3 = size,
+            _ => {}
+        }
+    }
+    cache
+}
+
+/// Parses sysfs sizes such as "32K", "1024K" or "32M" into bytes.
+fn parse_cache_size(text: &str) -> Option<u64> {
+    let text = text.trim();
+    if let Some(kib) = text.strip_suffix('K') {
+        return kib.parse::<u64>().ok().map(|n| n * 1024);
+    }
+    if let Some(mib) = text.strip_suffix('M') {
+        return mib.parse::<u64>().ok().map(|n| n * 1024 * 1024);
+    }
+    text.parse().ok()
+}
+
+fn read_khz_as_mhz(path: &Path) -> Option<Mhz> {
+    read_trimmed(path)?
+        .parse::<u64>()
+        .ok()
+        .map(|khz| Mhz::new(khz / 1000))
 }
 
 fn gpu_process_store<'a>(

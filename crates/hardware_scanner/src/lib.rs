@@ -2,7 +2,9 @@ use std::time::Duration;
 
 use crate::{
     gpu_scanner::NvidiaScanner,
-    model::{CpuInfo, GpuInfo, Percent, Process, RamInfo, ScanError, ScanResult, safe_div},
+    model::{
+        CpuInfo, GpuInfo, Percent, Process, RamInfo, ScanError, ScanResult, StaticInfo, safe_div,
+    },
     system_scanner::SystemScanner,
 };
 
@@ -65,6 +67,8 @@ impl HardwareInfo {
         self.cpu.core_usage.clear();
         self.cpu.temperature = None;
         self.cpu.total_usage = None;
+        self.cpu.frequency = None;
+        self.cpu.uptime = None;
         self.ram = RamInfo::default();
     }
 }
@@ -84,6 +88,13 @@ impl Hardwarescanner {
             gpus: None,
             cpu_rams: SystemScanner::new()?,
         })
+    }
+
+    /// Facts that never change at runtime. Call after `initinalize`.
+    pub fn static_info(&self) -> StaticInfo {
+        StaticInfo {
+            cpu: self.cpu_rams.cpu_static(),
+        }
     }
 
     pub fn initinalize(&mut self, gpu_error: &mut Option<ScanError>) -> HardwareInfo {
@@ -129,6 +140,8 @@ impl Hardwarescanner {
         total = safe_div(total, self.cpu_rams.cpu_count() as f32);
         info.cpu.total_usage = Some(Percent::new(total));
         info.cpu.temperature = self.cpu_rams.cpu_temprature();
+        info.cpu.frequency = self.cpu_rams.cpu_frequency();
+        info.cpu.uptime = self.cpu_rams.uptime();
     }
 
     fn scan_gpu(&self, info: &mut HardwareInfo, gpu_scanner: &NvidiaScanner) {
