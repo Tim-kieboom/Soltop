@@ -5,6 +5,18 @@ A Task Manager style system monitor for Linux, written in Rust with [egui](https
 Soltop shows what is running and how hard the hardware is working: per-process CPU, memory, disk and
 GPU usage, and live graphs for the CPU, memory, disks, network interfaces and GPUs.
 
+## Screenshots
+
+**Processes**: executables with several processes are folded into one expandable row, with per-process
+CPU, memory, disk and GPU usage.
+
+![The Processes tab](screenshots/processesTab1.jpg)
+
+**Performance**: a device list with a mini graph per device, and a detail view for the selected one,
+here the CPU with a live graph for every core.
+
+![The Performance tab showing the CPU](screenshots/performanceTab1.jpg)
+
 ## Features
 
 **Processes**
