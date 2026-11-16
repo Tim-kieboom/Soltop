@@ -19,6 +19,8 @@ enum SortKey {
     Pid,
     Ram,
     Gpu,
+    Disk,
+    User,
     Name,
 }
 
@@ -35,9 +37,19 @@ struct Group<'a> {
     /// Indices into the process list, in the list's current sort order.
     indices: Vec<usize>,
     first_pid: u32,
+    /// The shared owner, or `None` when the group's processes have different owners.
+    user: Option<&'a str>,
+    stats: Stats,
+}
+
+/// The numbers shown for one row, whether it is a process or a whole group.
+#[derive(Clone, Copy)]
+struct Stats {
     cpu: f32,
     memory: u64,
-    /// Highest GPU load in the group (percentages are not additive).
+    /// Read plus write, bytes per second.
+    disk: u64,
+    /// Highest GPU load (percentages are not additive).
     gpu: Option<f32>,
 }
 impl Group<'_> {
@@ -76,6 +88,12 @@ impl ProcessView {
             SortKey::Gpu => info
                 .processes_mut()
                 .sort_by(|a, b| partial_cmp(&a.gpu_usage, &b.gpu_usage, descending)),
+            SortKey::Disk => info
+                .processes_mut()
+                .sort_by(|a, b| cmp(&a.disk_rate(), &b.disk_rate(), descending)),
+            SortKey::User => info
+                .processes_mut()
+                .sort_by(|a, b| cmp(&a.user, &b.user, descending)),
             SortKey::Name => info
                 .processes_mut()
                 .sort_by(|a, b| cmp(&a.file_name(), &b.file_name(), descending)),
@@ -88,7 +106,9 @@ impl ProcessView {
             .column(Column::auto().at_least(60.0))
             .column(Column::remainder().clip(true))
             .column(Column::auto().at_least(80.0))
+            .column(Column::auto().at_least(80.0))
             .column(Column::auto().at_least(90.0))
+            .column(Column::auto().at_least(80.0))
             .column(Column::auto().at_least(80.0))
             .header(34.0, |header| self.header_ui(info, header))
             .body(|body| self.body_ui(info, body));
@@ -102,12 +122,19 @@ impl ProcessView {
             self.header_col_ui(ui, info, String::new(), "Name", SortKey::Name, Align::Min);
         });
         header.col(|ui| {
+            self.header_col_ui(ui, info, String::new(), "User", SortKey::User, Align::Min);
+        });
+        header.col(|ui| {
             let cpu = format!("{:.2}%", total_cpu(info));
             self.header_col_ui(ui, info, cpu, "CPU", SortKey::Cpu, Align::Max);
         });
         header.col(|ui| {
             let ram = ram_in_use(info);
             self.header_col_ui(ui, info, ram, "RAM", SortKey::Ram, Align::Max);
+        });
+        header.col(|ui| {
+            let disk = rate_text(info.processes().iter().map(Process::disk_rate).sum());
+            self.header_col_ui(ui, info, disk, "Disk", SortKey::Disk, Align::Max);
         });
         header.col(|ui| {
             let gpu = match total_gpu(info) {
@@ -132,9 +159,10 @@ impl ProcessView {
                 row.col(|ui| pid_cell(ui, process));
                 row.col(|ui| {
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                        name_label(ui, process.file_name(), &process.name);
+                        name_label(ui, process);
                     });
                 });
+                row.col(|ui| user_cell(ui, process.user.as_deref()));
                 stat_cells(&mut row, process_stats(process), ram_total);
             }
             RowKind::Child(i) => {
@@ -143,9 +171,10 @@ impl ProcessView {
                 row.col(|ui| {
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         ui.add_space(20.0);
-                        name_label(ui, process.file_name(), &process.name);
+                        name_label(ui, process);
                     });
                 });
+                row.col(|ui| user_cell(ui, process.user.as_deref()));
                 stat_cells(&mut row, process_stats(process), ram_total);
             }
             RowKind::Group(g) => {
@@ -172,7 +201,8 @@ impl ProcessView {
                         }
                     });
                 });
-                stat_cells(&mut row, (group.cpu, group.memory, group.gpu), ram_total);
+                row.col(|ui| user_cell(ui, group.user.or(Some("multiple"))));
+                stat_cells(&mut row, group.stats, ram_total);
             }
         });
     }
@@ -181,9 +211,11 @@ impl ProcessView {
         let d = self.descending;
         match self.key_sort {
             SortKey::Pid => groups.sort_by(|a, b| cmp(&a.first_pid, &b.first_pid, d)),
-            SortKey::Cpu => groups.sort_by(|a, b| partial_cmp(&a.cpu, &b.cpu, d)),
-            SortKey::Ram => groups.sort_by(|a, b| cmp(&a.memory, &b.memory, d)),
-            SortKey::Gpu => groups.sort_by(|a, b| partial_cmp(&a.gpu, &b.gpu, d)),
+            SortKey::Cpu => groups.sort_by(|a, b| partial_cmp(&a.stats.cpu, &b.stats.cpu, d)),
+            SortKey::Ram => groups.sort_by(|a, b| cmp(&a.stats.memory, &b.stats.memory, d)),
+            SortKey::Gpu => groups.sort_by(|a, b| partial_cmp(&a.stats.gpu, &b.stats.gpu, d)),
+            SortKey::Disk => groups.sort_by(|a, b| cmp(&a.stats.disk, &b.stats.disk, d)),
+            SortKey::User => groups.sort_by(|a, b| cmp(&a.user, &b.user, d)),
             SortKey::Name => groups.sort_by(|a, b| cmp(&a.name(), &b.name(), d)),
         }
     }
@@ -256,16 +288,20 @@ fn build_groups(processes: &[Process]) -> Vec<Group<'_>> {
 
     for (i, process) in processes.iter().enumerate() {
         let path: &Path = &process.name;
-        let (cpu, memory, gpu) = process_stats(process);
+        let stats = process_stats(process);
 
         match by_path.get(path) {
             Some(&g) => {
                 let group = &mut groups[g];
                 group.indices.push(i);
                 group.first_pid = group.first_pid.min(process.pid.as_u32());
-                group.cpu += cpu;
-                group.memory += memory;
-                group.gpu = match (group.gpu, gpu) {
+                if group.user != process.user.as_deref() {
+                    group.user = None;
+                }
+                group.stats.cpu += stats.cpu;
+                group.stats.memory += stats.memory;
+                group.stats.disk += stats.disk;
+                group.stats.gpu = match (group.stats.gpu, stats.gpu) {
                     (Some(a), Some(b)) => Some(a.max(b)),
                     (a, b) => a.or(b),
                 };
@@ -276,9 +312,8 @@ fn build_groups(processes: &[Process]) -> Vec<Group<'_>> {
                     path,
                     indices: vec![i],
                     first_pid: process.pid.as_u32(),
-                    cpu,
-                    memory,
-                    gpu,
+                    user: process.user.as_deref(),
+                    stats,
                 });
             }
         }
@@ -286,12 +321,13 @@ fn build_groups(processes: &[Process]) -> Vec<Group<'_>> {
     groups
 }
 
-fn process_stats(process: &Process) -> (f32, u64, Option<f32>) {
-    (
-        process.cpu_usage.as_f32(),
-        process.memory.as_u64(),
-        process.gpu_usage.map(|usage| usage.as_f32()),
-    )
+fn process_stats(process: &Process) -> Stats {
+    Stats {
+        cpu: process.cpu_usage.as_f32(),
+        memory: process.memory.as_u64(),
+        disk: process.disk_rate(),
+        gpu: process.gpu_usage.map(|usage| usage.as_f32()),
+    }
 }
 
 fn pid_cell(ui: &mut egui::Ui, process: &Process) {
@@ -300,22 +336,64 @@ fn pid_cell(ui: &mut egui::Ui, process: &Process) {
     });
 }
 
-fn name_label(ui: &mut egui::Ui, name: &OsStr, full_path: &Path) {
-    ui.add(egui::Label::new(name.to_string_lossy()).truncate())
-        .on_hover_text(full_path.to_string_lossy());
+/// The file name, with a hover card showing the path, command line and process details.
+fn name_label(ui: &mut egui::Ui, process: &Process) {
+    ui.add(egui::Label::new(process.file_name().to_string_lossy()).truncate())
+        .on_hover_ui(|ui| process_tooltip(ui, process));
 }
 
-fn stat_cells(
-    row: &mut TableRow<'_, '_>,
-    (cpu, memory, gpu): (f32, u64, Option<f32>),
-    ram_total: f32,
-) {
-    row.col(|ui| heat_cell(ui, cpu / 100.0, format!("{cpu:.1}%")));
-    row.col(|ui| {
-        let gb = Bytes::new(memory).to_gb(2).as_f32();
-        heat_cell(ui, memory as f32 / ram_total * 4.0, format!("{gb:.2} GB"));
+fn process_tooltip(ui: &mut egui::Ui, process: &Process) {
+    ui.set_max_width(520.0);
+    ui.strong(process.name.to_string_lossy());
+    if !process.command.is_empty() {
+        ui.label(&*process.command);
+    }
+    ui.separator();
+
+    let parent = process
+        .parent
+        .map_or("none".to_string(), |parent| parent.to_string());
+    let threads = process
+        .threads
+        .map_or("???".to_string(), |threads| threads.to_string());
+    let rows = [
+        ("PID", process.pid.to_string()),
+        ("Parent PID", parent),
+        ("Status", process.state.label().to_string()),
+        ("Threads", threads),
+        ("Running for", duration_text(process.run_time)),
+        ("Disk read", rate_text(process.disk_read.as_u64())),
+        ("Disk write", rate_text(process.disk_write.as_u64())),
+    ];
+    egui::Grid::new("process_tooltip")
+        .num_columns(2)
+        .spacing([16.0, 2.0])
+        .show(ui, |ui| {
+            for (label, value) in rows {
+                ui.weak(label);
+                ui.label(value);
+                ui.end_row();
+            }
+        });
+}
+
+fn user_cell(ui: &mut egui::Ui, user: Option<&str>) {
+    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+        ui.add(egui::Label::new(user.unwrap_or("__")).truncate());
     });
-    row.col(|ui| match gpu {
+}
+
+fn stat_cells(row: &mut TableRow<'_, '_>, stats: Stats, ram_total: f32) {
+    row.col(|ui| heat_cell(ui, stats.cpu / 100.0, format!("{:.1}%", stats.cpu)));
+    row.col(|ui| {
+        let gb = Bytes::new(stats.memory).to_gb(2).as_f32();
+        heat_cell(ui, stats.memory as f32 / ram_total * 4.0, format!("{gb:.2} GB"));
+    });
+    row.col(|ui| {
+        // 100 MB/s is a fully tinted cell.
+        heat_cell(ui, stats.disk as f32 / 100e6, rate_text(stats.disk));
+    });
+    row.col(|ui| match stats.gpu {
         Some(usage) => heat_cell(ui, usage / 100.0, format!("{usage:.0}%")),
         None => heat_cell(ui, 0.0, "__".to_string()),
     });
@@ -331,6 +409,32 @@ fn heat_cell(ui: &mut egui::Ui, ratio: f32, text: String) {
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         ui.label(text);
     });
+}
+
+/// Bytes per second as "12.3 MB/s".
+fn rate_text(bytes_per_second: u64) -> String {
+    let bytes = bytes_per_second as f64;
+    if bytes >= 1e9 {
+        format!("{:.1} GB/s", bytes / 1e9)
+    } else if bytes >= 1e6 {
+        format!("{:.1} MB/s", bytes / 1e6)
+    } else if bytes >= 1e3 {
+        format!("{:.0} KB/s", bytes / 1e3)
+    } else {
+        format!("{bytes:.0} B/s")
+    }
+}
+
+/// "2d 03:04:05" for long-running processes, "03:04:05" otherwise.
+fn duration_text(duration: std::time::Duration) -> String {
+    let secs = duration.as_secs();
+    let (days, hours, minutes, seconds) =
+        (secs / 86_400, secs % 86_400 / 3_600, secs % 3_600 / 60, secs % 60);
+    if days > 0 {
+        format!("{days}d {hours:02}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{hours:02}:{minutes:02}:{seconds:02}")
+    }
 }
 
 fn total_cpu(info: &HardwareInfo) -> f32 {

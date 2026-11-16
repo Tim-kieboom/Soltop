@@ -235,8 +235,52 @@ pub struct Process {
     pub gpu_memory: Option<Bytes>,
     pub gpu_usage: Option<Percent>,
     pub gpu_number: Option<GpuNumbers>,
+    /// Owner of the process; `None` when it could not be read.
+    pub user: Option<Box<str>>,
+    /// Full command line (arguments joined by spaces), cut off at a fixed length.
+    pub command: Box<str>,
+    pub parent: Option<sysinfo::Pid>,
+    pub state: ProcessState,
+    /// How long the process has been running.
+    pub run_time: Duration,
+    /// Number of threads; `None` when unknown.
+    pub threads: Option<usize>,
+    /// Bytes per second since the previous scan.
+    pub disk_read: Bytes,
+    pub disk_write: Bytes,
 }
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessState {
+    Running,
+    Sleeping,
+    DiskSleep,
+    Idle,
+    Stopped,
+    Zombie,
+    #[default]
+    Other,
+}
+impl ProcessState {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Running => "Running",
+            Self::Sleeping => "Sleeping",
+            Self::DiskSleep => "Waiting for disk",
+            Self::Idle => "Idle",
+            Self::Stopped => "Stopped",
+            Self::Zombie => "Zombie",
+            Self::Other => "Other",
+        }
+    }
+}
+
 impl Process {
+    /// Combined disk read and write rate in bytes per second.
+    pub fn disk_rate(&self) -> u64 {
+        self.disk_read.as_u64() + self.disk_write.as_u64()
+    }
+
     pub fn file_name(&self) -> &OsStr {
         self.name.file_name().unwrap_or(self.name.as_os_str())
     }

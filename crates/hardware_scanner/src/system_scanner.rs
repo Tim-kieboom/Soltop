@@ -2,12 +2,13 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use crate::{
     ScanError,
     gpu_scanner::{GpuProcess, GpuResult, NvidiaScanner},
-    model::{Bytes, CpuCache, CpuStatic, Degree, Mhz, Percent, safe_div},
+    model::{Bytes, CpuCache, CpuStatic, Degree, Mhz, Percent, ProcessState, safe_div},
     sensor_table::{self, HwmonRule, MAX_VALID_C, MIN_VALID_C, TargetRules},
     sysfs::{read_dir_paths, read_trimmed},
 };
@@ -18,12 +19,18 @@ const HWMON_DIR: &str = "/sys/class/hwmon";
 const THERMAL_DIR: &str = "/sys/class/thermal";
 const CPU0_DIR: &str = "/sys/devices/system/cpu/cpu0";
 const MEMINFO: &str = "/proc/meminfo";
+/// Longer command lines are cut off; some (browsers, Java) run to many kilobytes.
+const MAX_COMMAND_CHARS: usize = 400;
 
 pub struct SystemScanner {
     system: sysinfo::System,
     /// Sensor files found once at startup (millidegrees C).
     cpu_sensors: Vec<PathBuf>,
     ram_sensors: Vec<PathBuf>,
+    users: Option<sysinfo::Users>,
+    last_scan: Option<Instant>,
+    /// Seconds between the last two scans, used to turn per-refresh disk bytes into rates.
+    scan_seconds: f64,
 }
 impl SystemScanner {
     pub fn new() -> CpuRamResult<Self> {
@@ -31,6 +38,9 @@ impl SystemScanner {
             system: sysinfo::System::new()?,
             cpu_sensors: find_sensors(&sensor_table::CPU),
             ram_sensors: find_sensors(&sensor_table::RAM),
+            users: sysinfo::Users::new_with_refreshed_list().ok(),
+            last_scan: None,
+            scan_seconds: 1.0,
         })
     }
 
@@ -42,8 +52,24 @@ impl SystemScanner {
         self.system.refresh_cpu_usage();
         self.system.refresh_cpu_frequency();
         self.system.refresh_memory();
+
+        let now = Instant::now();
+        if let Some(last) = self.last_scan {
+            self.scan_seconds = now.duration_since(last).as_secs_f64().max(0.001);
+        }
+        self.last_scan = Some(now);
+
+        // The default refresh leaves out the command line and the owner.
+        let kind = sysinfo::ProcessRefreshKind::nothing()
+            .with_memory()
+            .with_cpu()
+            .with_disk_usage()
+            .with_exe(sysinfo::UpdateKind::OnlyIfNotSet)
+            .with_cmd(sysinfo::UpdateKind::OnlyIfNotSet)
+            .with_user(sysinfo::UpdateKind::OnlyIfNotSet)
+            .with_tasks();
         self.system
-            .refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+            .refresh_processes_specifics(sysinfo::ProcessesToUpdate::All, true, kind);
     }
 
     pub fn processes(
@@ -138,6 +164,17 @@ impl SystemScanner {
         Some(Bytes::new((cached + buffers) * 1024))
     }
 
+    /// The owner's name, or the numeric uid when no name is known.
+    fn user_name(&self, process: &sysinfo::Process) -> Option<Box<str>> {
+        let uid = process.user_id()?;
+        let name = self
+            .users
+            .as_ref()
+            .and_then(|users| users.get_user_by_id(uid))
+            .map(|user| user.name().to_string());
+        Some(name.unwrap_or_else(|| (**uid).to_string()).into())
+    }
+
     fn to_process(
         &self,
         process: &sysinfo::Process,
@@ -154,7 +191,18 @@ impl SystemScanner {
         let gpu_memory = gpu.map(|g| g.memory_usage).flatten();
         let gpu_usage = gpu.map(|g| g.gpu_usage).flatten();
 
+        let disk = process.disk_usage();
+        let per_second = |bytes: u64| Bytes::new((bytes as f64 / self.scan_seconds) as u64);
+
         super::Process {
+            user: self.user_name(process),
+            command: command_line(process),
+            parent: process.parent(),
+            state: state_of(process.status()),
+            run_time: Duration::from_secs(process.run_time()),
+            threads: process.tasks().map(|tasks| tasks.len()),
+            disk_read: per_second(disk.read_bytes),
+            disk_write: per_second(disk.written_bytes),
             gpu_usage,
             pid,
             name,
@@ -163,6 +211,29 @@ impl SystemScanner {
             gpu_number,
             gpu_memory,
         }
+    }
+}
+
+fn command_line(process: &sysinfo::Process) -> Box<str> {
+    let joined = process
+        .cmd()
+        .iter()
+        .map(|arg| arg.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ");
+    joined.chars().take(MAX_COMMAND_CHARS).collect::<String>().into()
+}
+
+fn state_of(status: sysinfo::ProcessStatus) -> ProcessState {
+    use sysinfo::ProcessStatus as S;
+    match status {
+        S::Run => ProcessState::Running,
+        S::Sleep => ProcessState::Sleeping,
+        S::UninterruptibleDiskSleep => ProcessState::DiskSleep,
+        S::Idle => ProcessState::Idle,
+        S::Stop | S::Tracing => ProcessState::Stopped,
+        S::Zombie => ProcessState::Zombie,
+        _ => ProcessState::Other,
     }
 }
 
