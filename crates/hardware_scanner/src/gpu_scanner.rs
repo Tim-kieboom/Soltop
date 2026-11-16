@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use nvml_wrapper::{
     Device, Nvml, enum_wrappers::device::TemperatureSensor, enums::device::UsedGpuMemory,
-    error::NvmlError, struct_wrappers::device::ProcessInfo,
+    error::NvmlError,
+    struct_wrappers::device::{ProcessInfo, ProcessUtilizationSample},
 };
 
 use crate::{
@@ -16,11 +17,16 @@ pub struct GpuProcess {
     pub pid: sysinfo::Pid,
     pub gpu_numbers: GpuNumbers,
     pub memory_usage: Option<Bytes>,
+    /// SM utilization of the newest NVML sample; `None` when NVML had no sample this tick.
+    pub gpu_usage: Option<Percent>,
 }
 
 pub struct NvidiaScanner {
     nvml: Nvml,
     processes: HashMap<sysinfo::Pid, GpuProcess>,
+    /// Newest utilization-sample timestamp seen per GPU index, passed back to NVML
+    /// so it only returns samples newer than the previous scan.
+    last_seen: HashMap<usize, u64>,
 }
 impl NvidiaScanner {
     pub fn new() -> GpuResult<Self> {
@@ -28,6 +34,7 @@ impl NvidiaScanner {
         Ok(Self {
             nvml,
             processes: HashMap::new(),
+            last_seen: HashMap::new(),
         })
     }
 
@@ -51,23 +58,29 @@ impl NvidiaScanner {
             let device = self.get_gpu(gpu_number as u32)?;
             let compute_result = device.running_compute_processes();
             let graphics_result = device.running_graphics_processes();
+            let last_seen = self.last_seen.get(&gpu_number).copied().unwrap_or(0);
+            let utilization_result = device.process_utilization_stats(last_seen);
 
-            if let Err(err) = self.memory_process(gpu_number, compute_result, graphics_result) {
-                errors.push(err.into());
-            }
+            self.memory_process(gpu_number, compute_result, errors);
+            self.memory_process(gpu_number, graphics_result, errors);
+            self.utilization_process(gpu_number, utilization_result, errors);
         }
         Ok(&self.processes)
     }
 
-    pub fn memory_process<'a>(
+    fn memory_process(
         &mut self,
         gpu_number: usize,
-        compute_result: GpuResult<Vec<ProcessInfo>>,
-        graphics_result: GpuResult<Vec<ProcessInfo>>,
-    ) -> GpuResult {
-        let mut processes = vec![];
-        processes = compute_result?;
-        processes.extend(graphics_result?);
+        result: GpuResult<Vec<ProcessInfo>>,
+        errors: &mut Vec<ScanError>,
+    ) {
+        let processes = match result {
+            Ok(processes) => processes,
+            Err(err) => {
+                errors.push(err.into());
+                return;
+            }
+        };
 
         for process in processes {
             let (pid, process) = to_gpu_process_entry(process, gpu_number);
@@ -77,7 +90,29 @@ impl NvidiaScanner {
                 None => _ = self.processes.insert(pid, process),
             }
         }
-        Ok(())
+    }
+
+    /// Merges per-process SM utilization into the process map.
+    /// `NotFound` just means NVML had no new samples since `last_seen`, so it is not an error.
+    fn utilization_process(
+        &mut self,
+        gpu_number: usize,
+        result: GpuResult<Vec<ProcessUtilizationSample>>,
+        errors: &mut Vec<ScanError>,
+    ) {
+        let samples = match result {
+            Ok(samples) => samples,
+            Err(NvmlError::NotFound) => return,
+            Err(err) => {
+                errors.push(err.into());
+                return;
+            }
+        };
+
+        let last_seen = self.last_seen.get(&gpu_number).copied().unwrap_or(0);
+        let (newest, max_timestamp) = newest_per_pid(&samples, last_seen);
+        self.last_seen.insert(gpu_number, max_timestamp);
+        merge_utilization(&mut self.processes, gpu_number, newest);
     }
 
     fn get_gpu(&self, index: u32) -> GpuResult<Device<'_>> {
@@ -122,6 +157,58 @@ impl GpuProcess {
             (None, usage) | (usage, None) => usage,
             (Some(a), Some(b)) => Some(Bytes::new(a.as_u64() + b.as_u64())),
         };
+        self.gpu_usage = max_usage(self.gpu_usage, other.gpu_usage);
+    }
+}
+
+/// Newest sample per pid as `(timestamp, sm_util)`, plus the highest timestamp seen
+/// (never lower than `last_seen`, so the cursor can't move backwards).
+fn newest_per_pid(
+    samples: &[ProcessUtilizationSample],
+    last_seen: u64,
+) -> (HashMap<u32, (u64, u32)>, u64) {
+    let mut newest: HashMap<u32, (u64, u32)> = HashMap::new();
+    let mut max_timestamp = last_seen;
+    for sample in samples {
+        max_timestamp = max_timestamp.max(sample.timestamp);
+        let entry = newest
+            .entry(sample.pid)
+            .or_insert((sample.timestamp, sample.sm_util));
+        if sample.timestamp >= entry.0 {
+            *entry = (sample.timestamp, sample.sm_util);
+        }
+    }
+    (newest, max_timestamp)
+}
+
+/// Writes utilization into the process map, creating entries for pids that had no
+/// memory entry and marking `gpu_number` as one of the process's GPUs.
+fn merge_utilization(
+    processes: &mut HashMap<sysinfo::Pid, GpuProcess>,
+    gpu_number: usize,
+    newest: HashMap<u32, (u64, u32)>,
+) {
+    for (pid, (_, sm_util)) in newest {
+        let pid = sysinfo::Pid::from_u32(pid);
+        let usage = Percent::new(sm_util as f32);
+        let gpu_numbers = GpuNumbers::from_index(gpu_number);
+
+        let entry = processes.entry(pid).or_insert_with(|| GpuProcess {
+            pid,
+            gpu_numbers,
+            memory_usage: None,
+            gpu_usage: None,
+        });
+        entry.gpu_numbers = entry.gpu_numbers.union(gpu_numbers);
+        entry.gpu_usage = max_usage(entry.gpu_usage, Some(usage));
+    }
+}
+
+/// Percentages across GPUs are not additive, so keep the highest one.
+fn max_usage(a: Option<Percent>, b: Option<Percent>) -> Option<Percent> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(if a.as_f32() >= b.as_f32() { a } else { b }),
+        (a, b) => a.or(b),
     }
 }
 
@@ -136,7 +223,149 @@ fn to_gpu_process_entry(process: ProcessInfo, gpu_number: usize) -> (sysinfo::Pi
         GpuProcess {
             pid,
             memory_usage,
+            gpu_usage: None,
             gpu_numbers: GpuNumbers::from_index(gpu_number),
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(pid: u32, timestamp: u64, sm_util: u32) -> ProcessUtilizationSample {
+        ProcessUtilizationSample {
+            pid,
+            timestamp,
+            sm_util,
+            mem_util: 0,
+            enc_util: 0,
+            dec_util: 0,
+        }
+    }
+
+    fn gpu_process(pid: u32, gpu: usize, mem: Option<u64>, usage: Option<f32>) -> GpuProcess {
+        GpuProcess {
+            pid: sysinfo::Pid::from_u32(pid),
+            gpu_numbers: GpuNumbers::from_index(gpu),
+            memory_usage: mem.map(Bytes::new),
+            gpu_usage: usage.map(Percent::new),
+        }
+    }
+
+    fn pid(p: u32) -> sysinfo::Pid {
+        sysinfo::Pid::from_u32(p)
+    }
+
+    #[test]
+    fn newest_per_pid_keeps_latest_sample() {
+        let samples = [sample(1, 100, 10), sample(1, 300, 70), sample(1, 200, 40)];
+        let (newest, _) = newest_per_pid(&samples, 0);
+        assert_eq!(newest[&1], (300, 70));
+    }
+
+    #[test]
+    fn newest_per_pid_tracks_each_pid_separately() {
+        let samples = [sample(1, 100, 10), sample(2, 200, 90)];
+        let (newest, _) = newest_per_pid(&samples, 0);
+        assert_eq!(newest.len(), 2);
+        assert_eq!(newest[&1], (100, 10));
+        assert_eq!(newest[&2], (200, 90));
+    }
+
+    #[test]
+    fn newest_per_pid_returns_max_timestamp() {
+        let samples = [sample(1, 100, 10), sample(2, 500, 20), sample(3, 300, 30)];
+        let (_, max) = newest_per_pid(&samples, 0);
+        assert_eq!(max, 500);
+    }
+
+    #[test]
+    fn newest_per_pid_cursor_never_moves_backwards() {
+        let (_, max) = newest_per_pid(&[sample(1, 100, 10)], 1_000);
+        assert_eq!(max, 1_000);
+        let (newest, max) = newest_per_pid(&[], 1_000);
+        assert!(newest.is_empty());
+        assert_eq!(max, 1_000);
+    }
+
+    #[test]
+    fn merge_utilization_creates_entry_for_unknown_pid() {
+        let mut processes = HashMap::new();
+        merge_utilization(&mut processes, 1, HashMap::from([(42, (10, 55))]));
+
+        let p = &processes[&pid(42)];
+        assert_eq!(p.gpu_usage, Some(Percent::new(55.0)));
+        assert_eq!(p.memory_usage, None);
+        assert_eq!(p.gpu_numbers.as_u64(), GpuNumbers::from_index(1).as_u64());
+    }
+
+    #[test]
+    fn merge_utilization_keeps_existing_memory() {
+        let mut processes = HashMap::new();
+        processes.insert(pid(7), gpu_process(7, 0, Some(2048), None));
+        merge_utilization(&mut processes, 0, HashMap::from([(7, (10, 30))]));
+
+        let p = &processes[&pid(7)];
+        assert_eq!(p.memory_usage, Some(Bytes::new(2048)));
+        assert_eq!(p.gpu_usage, Some(Percent::new(30.0)));
+    }
+
+    #[test]
+    fn merge_utilization_takes_max_across_gpus_and_unions_numbers() {
+        let mut processes = HashMap::new();
+        merge_utilization(&mut processes, 0, HashMap::from([(7, (10, 80))]));
+        merge_utilization(&mut processes, 1, HashMap::from([(7, (10, 20))]));
+
+        let p = &processes[&pid(7)];
+        assert_eq!(p.gpu_usage, Some(Percent::new(80.0)));
+        assert!(p.gpu_numbers.contains(0));
+        assert!(p.gpu_numbers.contains(1));
+    }
+
+    #[test]
+    fn max_usage_handles_none() {
+        let a = Some(Percent::new(10.0));
+        let b = Some(Percent::new(20.0));
+        assert_eq!(max_usage(None, None), None);
+        assert_eq!(max_usage(a, None), a);
+        assert_eq!(max_usage(None, b), b);
+        assert_eq!(max_usage(a, b), b);
+        assert_eq!(max_usage(b, a), b);
+    }
+
+    #[test]
+    fn combine_sums_memory_across_different_gpus() {
+        let mut a = gpu_process(1, 0, Some(100), Some(10.0));
+        a.combine(gpu_process(1, 1, Some(50), Some(40.0)));
+
+        assert_eq!(a.memory_usage, Some(Bytes::new(150)));
+        assert_eq!(a.gpu_usage, Some(Percent::new(40.0)));
+        assert!(a.gpu_numbers.contains(0) && a.gpu_numbers.contains(1));
+    }
+
+    #[test]
+    fn combine_does_not_double_count_same_gpu() {
+        // same pid listed as both compute and graphics process on one GPU
+        let mut a = gpu_process(1, 0, Some(100), None);
+        a.combine(gpu_process(1, 0, Some(100), None));
+
+        assert_eq!(a.memory_usage, Some(Bytes::new(100)));
+    }
+
+    #[test]
+    fn entry_maps_unavailable_memory_to_none() {
+        let info = ProcessInfo {
+            pid: 9,
+            used_gpu_memory: UsedGpuMemory::Unavailable,
+            gpu_instance_id: None,
+            compute_instance_id: None,
+        };
+        let (p, entry) = to_gpu_process_entry(info, 2);
+
+        assert_eq!(p, pid(9));
+        assert_eq!(entry.memory_usage, None);
+        assert_eq!(entry.gpu_usage, None);
+        assert!(entry.gpu_numbers.contains(2));
+    }
 }

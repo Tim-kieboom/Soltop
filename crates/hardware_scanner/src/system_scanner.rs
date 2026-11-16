@@ -91,8 +91,10 @@ impl SystemScanner {
         let gpu = gpus.map(|g| g.get(&pid)).flatten();
         let gpu_number = gpu.map(|g| g.gpu_numbers);
         let gpu_memory = gpu.map(|g| g.memory_usage).flatten();
+        let gpu_usage = gpu.map(|g| g.gpu_usage).flatten();
 
         super::Process {
+            gpu_usage,
             pid,
             name,
             memory,

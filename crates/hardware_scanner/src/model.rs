@@ -96,6 +96,7 @@ pub struct Process {
     pub name: Box<Path>,
     pub cpu_usage: Percent,
     pub gpu_memory: Option<Bytes>,
+    pub gpu_usage: Option<Percent>,
     pub gpu_number: Option<GpuNumbers>,
 }
 impl Process {
