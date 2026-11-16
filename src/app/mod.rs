@@ -3,13 +3,9 @@ use std::fmt::Display;
 use eframe::egui;
 use hardware_scanner::HardwareInfo;
 
-use crate::{
-    app::{performance::PerformanceView, processes::ProcessView},
-    scan_thread::{Message, ScannerThread},
-};
+use crate::scan_thread::{Message, ScannerThread};
 
-mod performance;
-mod processes;
+mod tabs;
 
 #[derive(PartialEq, Clone, Copy, Default)]
 enum Tab {
@@ -22,10 +18,10 @@ pub struct App {
     tab: Tab,
     scanner: ScannerThread,
     fatal: Option<Box<str>>,
-    process_view: ProcessView,
+    process_view: tabs::ProcessView,
     gpu_note: Option<Box<str>>,
     info: Option<HardwareInfo>,
-    performance_view: PerformanceView,
+    performance_view: tabs::PerformanceView,
 }
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -53,8 +49,8 @@ impl App {
             fatal: None,
             gpu_note: None,
             tab: Tab::default(),
-            process_view: ProcessView::new(),
-            performance_view: PerformanceView::new(),
+            process_view: tabs::ProcessView::new(),
+            performance_view: tabs::PerformanceView::new(),
         }
     }
 

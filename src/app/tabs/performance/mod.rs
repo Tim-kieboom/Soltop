@@ -1,10 +1,12 @@
-use std::collections::VecDeque;
-
 use eframe::egui::{self, Align2, Color32, FontId, Mesh, Pos2, Rect, Sense, Shape, Stroke};
 use hardware_scanner::{
     HardwareInfo,
     model::{AsF64, Gb, GpuInfo, Percent},
 };
+
+use crate::app::tabs::performance::history::History;
+
+mod history;
 
 const CPU_COLOR: Color32 = Color32::from_rgb(17, 125, 187);
 const RAM_COLOR: Color32 = Color32::from_rgb(139, 18, 174);
@@ -12,6 +14,10 @@ const GPU_COLOR: Color32 = Color32::from_rgb(60, 160, 90);
 
 /// How many of the newest samples the mini graphs in the device list show.
 const MINI_POINTS: usize = 60;
+
+const CORE_TILE_MIN_WIDTH: f32 = 130.0;
+const CORE_TILE_HEIGHT: f32 = 56.0;
+const CORE_TILE_SPACING: f32 = 8.0;
 
 #[derive(Clone, Copy, PartialEq, Default)]
 enum Device {
@@ -46,6 +52,7 @@ struct Card {
 pub struct PerformanceView {
     selected: Device,
     cpu_history: History<Percent>,
+    core_histories: Vec<History<Percent>>,
     ram_history: History<Gb>,
     gpu_histories: Vec<GpuHistory>,
 }
@@ -53,6 +60,7 @@ impl PerformanceView {
     pub fn new() -> Self {
         Self {
             selected: Device::default(),
+            core_histories: Vec::new(),
             ram_history: History::new(1000, 0.0),
             cpu_history: History::new(1000, 100.0),
             gpu_histories: Vec::new(),
@@ -72,6 +80,14 @@ impl PerformanceView {
         }
         if let Some(used) = info.ram().used {
             self.ram_history.push(used.to_gb(5));
+        }
+
+        let cores = &info.cpu().core_usage;
+        while self.core_histories.len() < cores.len() {
+            self.core_histories.push(History::new(1000, 100.0));
+        }
+        for (history, usage) in self.core_histories.iter_mut().zip(cores) {
+            history.push(*usage);
         }
 
         while self.gpu_histories.len() < info.gpus().len() {
@@ -137,7 +153,7 @@ impl PerformanceView {
                 value: percent_text(info.cpu().total_usage),
                 color: CPU_COLOR,
                 values: self.cpu_history.recent(MINI_POINTS),
-                max: self.cpu_history.max,
+                max: self.cpu_history.max(),
             },
             Device::Memory => {
                 let ram = info.ram();
@@ -155,7 +171,7 @@ impl PerformanceView {
                     value,
                     color: RAM_COLOR,
                     values: self.ram_history.recent(MINI_POINTS),
-                    max: self.ram_history.max,
+                    max: self.ram_history.max(),
                 }
             }
             Device::Gpu(i) => {
@@ -199,21 +215,33 @@ impl PerformanceView {
         );
 
         ui.add_space(12.0);
-        ui.strong("Per core");
-        egui::Grid::new("cores")
-            .num_columns(4)
-            .spacing([8.0, 4.0])
-            .show(ui, |ui| {
-                for (i, core) in cpu.core_usage.iter().enumerate() {
-                    let bar = egui::ProgressBar::new(core.as_f32() / 100.0)
-                        .fill(CPU_COLOR)
-                        .show_percentage();
-                    ui.add(bar);
-                    if (i + 1) % 4 == 0 {
-                        ui.end_row();
-                    }
+        ui.strong("Logical processors");
+        ui.add_space(4.0);
+        self.cores_ui(&cpu.core_usage, ui);
+    }
+
+    /// One small live graph per core; the column count adapts to the available width.
+    fn cores_ui(&self, cores: &[Percent], ui: &mut egui::Ui) {
+        let spacing = CORE_TILE_SPACING;
+        let available = ui.available_width();
+        let columns = (((available + spacing) / (CORE_TILE_MIN_WIDTH + spacing)).floor() as usize)
+            .max(1);
+        let width = (available - spacing * (columns - 1) as f32) / columns as f32;
+
+        for (row, chunk) in cores.chunks(columns).enumerate() {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = spacing;
+                for (offset, usage) in chunk.iter().enumerate() {
+                    let index = row * columns + offset;
+                    let values = self
+                        .core_histories
+                        .get(index)
+                        .map(|history| history.recent(MINI_POINTS))
+                        .unwrap_or_default();
+                    core_tile(ui, width, index, *usage, &values);
                 }
             });
+        }
     }
 
     fn ram_ui(&self, info: &HardwareInfo, ui: &mut egui::Ui) {
@@ -368,6 +396,32 @@ fn device_card(ui: &mut egui::Ui, card: &Card, selected: bool) -> bool {
     response.clicked()
 }
 
+/// One core: a live graph with the core number top-left and its current load top-right.
+fn core_tile(ui: &mut egui::Ui, width: f32, index: usize, usage: Percent, values: &[f64]) {
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(width, CORE_TILE_HEIGHT), Sense::hover());
+
+    let title_color = ui.visuals().strong_text_color();
+    let label_color = ui.visuals().weak_text_color();
+
+    let painter = ui.painter();
+    paint_sparkline(painter, rect, values, 100.0, CPU_COLOR);
+    painter.text(
+        rect.left_top() + egui::vec2(6.0, 4.0),
+        Align2::LEFT_TOP,
+        format!("Core {index}"),
+        FontId::proportional(11.0),
+        label_color,
+    );
+    painter.text(
+        rect.right_top() + egui::vec2(-6.0, 4.0),
+        Align2::RIGHT_TOP,
+        format!("{:.0}%", usage.as_f32()),
+        FontId::proportional(12.0),
+        title_color,
+    );
+}
+
 /// Draws a small filled line graph into `rect`, newest sample on the right.
 fn paint_sparkline(painter: &egui::Painter, rect: Rect, values: &[f64], max: f64, color: Color32) {
     painter.rect_filled(rect, 0.0, color.gamma_multiply(0.08));
@@ -408,73 +462,4 @@ fn paint_sparkline(painter: &egui::Painter, rect: Rect, values: &[f64], max: f64
     }
     painter.add(Shape::mesh(mesh));
     painter.add(Shape::line(points, Stroke::new(1.0, color)));
-}
-
-struct History<T: AsF64> {
-    max: f64,
-    limit: usize,
-    queue: VecDeque<T>,
-}
-impl<T: AsF64> History<T> {
-    fn new(limit: usize, max: f64) -> Self {
-        Self {
-            max,
-            limit,
-            queue: VecDeque::with_capacity(limit),
-        }
-    }
-
-    fn set_max(&mut self, max: f64) {
-        self.max = max
-    }
-
-    fn push(&mut self, value: T) {
-        if self.queue.len() >= self.limit {
-            _ = self.queue.pop_front();
-        }
-
-        self.queue.push_back(value);
-    }
-
-    /// The newest `count` samples, oldest first.
-    fn recent(&self, count: usize) -> Vec<f64> {
-        let skip = self.queue.len().saturating_sub(count);
-        self.queue.iter().skip(skip).map(|v| v.as_f64()).collect()
-    }
-
-    fn plot(
-        &self,
-        ui: &mut egui::Ui,
-        id: impl std::hash::Hash + std::fmt::Debug,
-        line_name: &str,
-        color: Color32,
-    ) {
-        let points: Vec<[f64; 2]> = self
-            .queue
-            .iter()
-            .enumerate()
-            .map(|(i, v)| [i as f64, v.as_f64()])
-            .collect();
-
-        egui_plot::Plot::new(egui::Id::unique(id))
-            .height(160.0)
-            .include_y(0.0)
-            .include_y(self.max)
-            .allow_drag(false)
-            .allow_zoom(false)
-            .allow_scroll(false)
-            .allow_boxed_zoom(false)
-            .show_axes([false, false])
-            .show_x(false)
-            .show_y(false)
-            .show(ui, |plot_ui| {
-                plot_ui.line(
-                    egui_plot::Line::new(line_name, points)
-                        .color(color)
-                        .width(1.5)
-                        .fill(0.0)
-                        .fill_alpha(0.25),
-                );
-            });
-    }
 }

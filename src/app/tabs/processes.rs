@@ -9,7 +9,7 @@ use eframe::egui::{self, Align, Color32, Layout};
 use egui_extras::{Column, TableBody, TableBuilder, TableRow};
 use hardware_scanner::{
     HardwareInfo,
-    model::{Bytes, Percent, Process},
+    model::{Bytes, Process},
 };
 
 #[derive(Default, PartialEq, Clone, Copy)]
@@ -106,7 +106,7 @@ impl ProcessView {
             self.header_col_ui(ui, info, cpu, "CPU", SortKey::Cpu, Align::Max);
         });
         header.col(|ui| {
-            let ram = format!("{:.1} GB total", total_ram(info));
+            let ram = ram_in_use(info);
             self.header_col_ui(ui, info, ram, "RAM", SortKey::Ram, Align::Max);
         });
         header.col(|ui| {
@@ -305,7 +305,11 @@ fn name_label(ui: &mut egui::Ui, name: &OsStr, full_path: &Path) {
         .on_hover_text(full_path.to_string_lossy());
 }
 
-fn stat_cells(row: &mut TableRow<'_, '_>, (cpu, memory, gpu): (f32, u64, Option<f32>), ram_total: f32) {
+fn stat_cells(
+    row: &mut TableRow<'_, '_>,
+    (cpu, memory, gpu): (f32, u64, Option<f32>),
+    ram_total: f32,
+) {
     row.col(|ui| heat_cell(ui, cpu / 100.0, format!("{cpu:.1}%")));
     row.col(|ui| {
         let gb = Bytes::new(memory).to_gb(2).as_f32();
@@ -333,8 +337,15 @@ fn total_cpu(info: &HardwareInfo) -> f32 {
     info.cpu().total_usage.unwrap_or_default().as_f32()
 }
 
-fn total_ram(info: &HardwareInfo) -> f32 {
-    info.ram().total.unwrap_or_default().to_gb(2).as_f32()
+/// Memory currently in use, as "12.8 GB (10%)".
+fn ram_in_use(info: &HardwareInfo) -> String {
+    let ram = info.ram();
+    let (Some(used), Some(total)) = (ram.used, ram.total) else {
+        return "__".to_string();
+    };
+
+    let percent = used.as_u64() as f32 / total.as_u64().max(1) as f32 * 100.0;
+    format!("{:.1} GB ({percent:.0}%)", used.to_gb(1).as_f32())
 }
 
 /// Average GPU load across the GPUs that reported one; `None` when no GPU did.

@@ -4,14 +4,7 @@ use std::{
 };
 use thiserror::Error;
 
-pub type MainResult<T = ()> = Result<T, MainError>;
 pub type ScanThreadResult<T = ()> = Result<T, ScanThreadError>;
-
-#[derive(Debug, Error)]
-pub enum MainError {
-    #[error("{0}")]
-    Scan(#[from] ScanThreadError),
-}
 
 #[derive(Debug)]
 pub struct ThreadJoinError(Box<dyn std::any::Any + Send + 'static>);

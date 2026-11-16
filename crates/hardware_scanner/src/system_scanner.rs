@@ -53,6 +53,9 @@ impl SystemScanner {
             self.system
                 .processes()
                 .values()
+                // Userland threads are listed as processes and repeat their parent's
+                // full memory, so counting them multiplies RAM by the thread count.
+                .filter(|process| process.thread_kind() != Some(sysinfo::ThreadKind::Userland))
                 .map(|process| self.to_process(process, gpu_process_store)),
         );
         Ok(())
