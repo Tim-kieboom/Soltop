@@ -38,8 +38,28 @@
           nativeBuildInputs = [
             pkgs.pkg-config
             pkgs.makeWrapper
+            pkgs.copyDesktopItems
           ];
           buildInputs = runtimeLibs pkgs;
+
+          # The entry that makes Soltop show up in application launchers.
+          desktopItems = [
+            (pkgs.makeDesktopItem {
+              name = "soltop";
+              desktopName = "Soltop";
+              genericName = "System Monitor";
+              comment = "A Task Manager style system monitor";
+              exec = "Soltop";
+              icon = "utilities-system-monitor"; # a theme icon, Soltop has none of its own yet
+              terminal = false;
+              categories = [
+                "System"
+                "Monitor"
+              ];
+              # the app id the window announces, so launchers match the window to this entry
+              startupWMClass = "Soltop";
+            })
+          ];
 
           # Two tests scan the machine they run on (processes, disks, the scan thread),
           # which the build sandbox does not suit.
