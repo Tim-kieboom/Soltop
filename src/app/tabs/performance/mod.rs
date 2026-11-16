@@ -1,7 +1,7 @@
 use eframe::egui::{self, Align2, Color32, FontId, Mesh, Pos2, Rect, Sense, Shape, Stroke};
 use hardware_scanner::{
     HardwareInfo,
-    model::{AsF64, Bytes, DiskKind, Gb, Mhz, Percent, StaticInfo, Watts},
+    model::{AsF64, Bytes, DiskKind, Gb, Mhz, NetKind, Percent, StaticInfo, Watts},
 };
 
 use crate::app::tabs::performance::history::History;
@@ -12,6 +12,7 @@ const CPU_COLOR: Color32 = Color32::from_rgb(17, 125, 187);
 const RAM_COLOR: Color32 = Color32::from_rgb(139, 18, 174);
 const GPU_COLOR: Color32 = Color32::from_rgb(60, 160, 90);
 const DISK_COLOR: Color32 = Color32::from_rgb(214, 148, 0);
+const NET_COLOR: Color32 = Color32::from_rgb(30, 160, 160);
 /// Unused part of a volume's usage bar.
 const VOLUME_EMPTY_COLOR: Color32 = Color32::from_gray(58);
 
@@ -28,6 +29,7 @@ enum Device {
     Cpu,
     Memory,
     Disk(usize),
+    Net(usize),
     Gpu(usize),
 }
 
@@ -43,6 +45,20 @@ impl DiskHistory {
             // A max of 0 lets the transfer graphs scale to the data.
             read: History::new(1000, 0.0),
             write: History::new(1000, 0.0),
+        }
+    }
+}
+
+struct NetHistory {
+    receive: History<Bytes>,
+    send: History<Bytes>,
+}
+impl NetHistory {
+    fn new() -> Self {
+        Self {
+            // A max of 0 lets the graphs scale to the data.
+            receive: History::new(1000, 0.0),
+            send: History::new(1000, 0.0),
         }
     }
 }
@@ -77,6 +93,7 @@ pub struct PerformanceView {
     ram_history: History<Gb>,
     gpu_histories: Vec<GpuHistory>,
     disk_histories: Vec<DiskHistory>,
+    net_histories: Vec<NetHistory>,
 }
 impl PerformanceView {
     pub fn new() -> Self {
@@ -88,6 +105,7 @@ impl PerformanceView {
             cpu_history: History::new(1000, 100.0),
             gpu_histories: Vec::new(),
             disk_histories: Vec::new(),
+            net_histories: Vec::new(),
         }
     }
 
@@ -143,6 +161,18 @@ impl PerformanceView {
                 history.write.push(write);
             }
         }
+
+        while self.net_histories.len() < info.nets().len() {
+            self.net_histories.push(NetHistory::new());
+        }
+        for (history, net) in self.net_histories.iter_mut().zip(info.nets()) {
+            if let Some(receive) = net.receive_rate {
+                history.receive.push(receive);
+            }
+            if let Some(send) = net.send_rate {
+                history.send.push(send);
+            }
+        }
     }
 
     pub fn ui(&mut self, info: &HardwareInfo, ui: &mut egui::Ui) {
@@ -155,6 +185,7 @@ impl PerformanceView {
             Device::Cpu => self.cpu_ui(info, ui),
             Device::Memory => self.ram_ui(info, ui),
             Device::Disk(i) => self.disk_ui(info, i, ui),
+            Device::Net(i) => self.net_ui(info, i, ui),
             Device::Gpu(i) => self.gpu_ui(info, i, ui),
         });
     }
@@ -164,6 +195,7 @@ impl PerformanceView {
         match self.selected {
             Device::Gpu(i) if !matches!(info.gpus().get(i), Some(Some(_))) => Device::Cpu,
             Device::Disk(i) if i >= info.disks().len() => Device::Cpu,
+            Device::Net(i) if i >= info.nets().len() => Device::Cpu,
             device => device,
         }
     }
@@ -174,6 +206,7 @@ impl PerformanceView {
 
         let mut devices = vec![Device::Cpu, Device::Memory];
         devices.extend((0..info.disks().len()).map(Device::Disk));
+        devices.extend((0..info.nets().len()).map(Device::Net));
         devices.extend(
             info.gpus()
                 .iter()
@@ -232,6 +265,30 @@ impl PerformanceView {
                         .map(|history| history.active.recent(MINI_POINTS))
                         .unwrap_or_default(),
                     max: 100.0,
+                }
+            }
+            Device::Net(i) => {
+                let net = info.nets().get(i);
+                let history = self.net_histories.get(i);
+                // One graph for both directions, scaled to its own peak (at least 100 KB/s so
+                // idle noise doesn't fill the box).
+                let values: Vec<f64> = history.map_or(Vec::new(), |history| {
+                    let receive = history.receive.recent(MINI_POINTS);
+                    let send = history.send.recent(MINI_POINTS);
+                    receive.iter().zip(&send).map(|(r, s)| r + s).collect()
+                });
+                let max = values.iter().copied().fold(100_000.0, f64::max);
+                let rate = |rate: Option<Bytes>| rate.map_or("?".into(), rate_short);
+                Card {
+                    title: self.net_title(info, i),
+                    value: format!(
+                        "R {}  S {}",
+                        rate(net.and_then(|net| net.receive_rate)),
+                        rate(net.and_then(|net| net.send_rate))
+                    ),
+                    color: NET_COLOR,
+                    values,
+                    max,
                 }
             }
             Device::Gpu(i) => {
@@ -459,6 +516,79 @@ impl PerformanceView {
         }
     }
 
+    fn net_static(&self, info: &HardwareInfo, index: usize) -> Option<&hardware_scanner::model::NetStatic> {
+        let id = &info.nets().get(index)?.id;
+        self.static_info.nets.iter().find(|facts| facts.id == *id)
+    }
+
+    /// "Ethernet" or "Wi-Fi", falling back to the interface name.
+    fn net_title(&self, info: &HardwareInfo, index: usize) -> String {
+        match self.net_static(info, index).map(|facts| facts.kind) {
+            Some(NetKind::Ethernet) => "Ethernet".into(),
+            Some(NetKind::Wifi) => "Wi-Fi".into(),
+            None => format!("Network {index}"),
+        }
+    }
+
+    fn net_ui(&self, info: &HardwareInfo, index: usize, ui: &mut egui::Ui) {
+        let Some(net) = info.nets().get(index) else {
+            return;
+        };
+        let Some(history) = self.net_histories.get(index) else {
+            return;
+        };
+        let facts = self.net_static(info, index);
+        let is_wifi = facts.is_some_and(|facts| facts.kind == NetKind::Wifi);
+
+        section_header(
+            ui,
+            &self.net_title(info, index),
+            &net.id,
+        );
+        ui.strong("Receive");
+        history
+            .receive
+            .plot(ui, format!("plot_net_rx_{index}"), "Receive", NET_COLOR);
+        ui.add_space(8.0);
+        ui.strong("Send");
+        history
+            .send
+            .plot(ui, format!("plot_net_tx_{index}"), "Send", NET_COLOR);
+
+        ui.add_space(8.0);
+        let mut tiles = vec![
+            ("Receive", net.receive_rate.map_or("???".into(), rate_text)),
+            ("Send", net.send_rate.map_or("???".into(), rate_text)),
+            (
+                "Link speed",
+                net.link_speed.map_or("???".into(), link_speed_text),
+            ),
+            (
+                "Status",
+                if net.connected { "Connected" } else { "Disconnected" }.to_string(),
+            ),
+        ];
+        if is_wifi {
+            tiles.push((
+                "Signal",
+                net.signal_dbm.map_or("???".into(), |dbm| format!("{dbm} dBm")),
+            ));
+        }
+        stats_ui(ui, &tiles);
+
+        ui.add_space(4.0);
+        if let Some(mac) = facts.and_then(|facts| facts.mac.as_deref()) {
+            stats_ui(ui, &[("MAC address", mac.to_string())]);
+        }
+        if !net.addresses.is_empty() {
+            ui.add_space(4.0);
+            ui.strong("IP addresses");
+            for address in &net.addresses {
+                ui.label(address.to_string());
+            }
+        }
+    }
+
     fn gpu_ui(&self, info: &HardwareInfo, index: usize, ui: &mut egui::Ui) {
         let Some(Some(gpu)) = info.gpus().get(index) else {
             return;
@@ -537,6 +667,28 @@ impl PerformanceView {
                 ),
             ],
         );
+    }
+}
+
+/// Bits per second as "1.0 Gbps" or "866 Mbps".
+fn link_speed_text(bits_per_second: u64) -> String {
+    let bits = bits_per_second as f64;
+    if bits >= 1e9 {
+        format!("{:.1} Gbps", bits / 1e9)
+    } else {
+        format!("{:.0} Mbps", bits / 1e6)
+    }
+}
+
+/// Compact rate for the narrow device cards: "3.4M", "812K", "0".
+fn rate_short(rate: Bytes) -> String {
+    let bytes = rate.as_u64() as f64;
+    if bytes >= 1e6 {
+        format!("{:.1}M", bytes / 1e6)
+    } else if bytes >= 1e3 {
+        format!("{:.0}K", bytes / 1e3)
+    } else {
+        format!("{bytes:.0}")
     }
 }
 

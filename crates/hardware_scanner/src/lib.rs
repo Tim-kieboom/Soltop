@@ -3,14 +3,16 @@ use std::time::Duration;
 use crate::{
     disk_scanner::DiskScanner,
     gpu_scanner::NvidiaScanner,
+    net_scanner::NetScanner,
     model::{
-        CpuInfo, DiskInfo, GpuInfo, Percent, Process, RamInfo, ScanError, ScanResult, StaticInfo, safe_div,
+        CpuInfo, DiskInfo, GpuInfo, NetInfo, Percent, Process, RamInfo, ScanError, ScanResult, StaticInfo, safe_div,
     },
     system_scanner::SystemScanner,
 };
 
 mod disk_scanner;
 mod gpu_scanner;
+mod net_scanner;
 pub mod model;
 mod sensor_table;
 mod sysfs;
@@ -23,6 +25,7 @@ pub struct HardwareInfo {
     processes: Vec<Process>,
     gpus: Vec<Option<GpuInfo>>,
     disks: Vec<DiskInfo>,
+    nets: Vec<NetInfo>,
     errors: Vec<ScanError>,
 }
 impl HardwareInfo {
@@ -32,6 +35,7 @@ impl HardwareInfo {
             cpu: CpuInfo::default(),
             gpus: vec![],
             disks: vec![],
+            nets: vec![],
             errors: vec![],
             processes: vec![],
         }
@@ -53,6 +57,10 @@ impl HardwareInfo {
         &self.disks
     }
 
+    pub fn nets(&self) -> &[NetInfo] {
+        &self.nets
+    }
+
     pub fn processes(&self) -> &[Process] {
         &self.processes
     }
@@ -72,6 +80,7 @@ impl HardwareInfo {
     fn clear(&mut self) {
         self.gpus.clear();
         self.disks.clear();
+        self.nets.clear();
         self.errors.clear();
         self.processes.clear();
         self.cpu.core_usage.clear();
@@ -92,12 +101,14 @@ pub struct Hardwarescanner {
     cpu_rams: SystemScanner,
     gpus: Option<NvidiaScanner>,
     disks: DiskScanner,
+    nets: NetScanner,
 }
 impl Hardwarescanner {
     pub fn new() -> ScanResult<Self> {
         Ok(Self {
             gpus: None,
             disks: DiskScanner::new(),
+            nets: NetScanner::new(),
             cpu_rams: SystemScanner::new()?,
         })
     }
@@ -117,6 +128,7 @@ impl Hardwarescanner {
                 .map(|gpus| gpus.static_infos())
                 .unwrap_or_default(),
             disks: self.disks.static_infos(),
+            nets: self.nets.static_infos(),
         }
     }
 
@@ -146,6 +158,7 @@ impl Hardwarescanner {
             self.scan_gpu(info, gpu_scanner)
         }
         self.disks.scan(&mut info.disks);
+        self.nets.scan(&mut info.nets);
     }
 
     fn scan_ram(&self, info: &mut HardwareInfo) {

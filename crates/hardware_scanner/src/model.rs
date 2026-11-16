@@ -1,4 +1,4 @@
-use std::{ffi::OsStr, fmt::Debug, path::Path, time::Duration};
+use std::{ffi::OsStr, fmt::Debug, net::IpAddr, path::Path, time::Duration};
 
 use nvml_wrapper::error::NvmlError;
 use thiserror::Error;
@@ -94,6 +94,7 @@ pub struct StaticInfo {
     /// One entry per GPU index, `None` when that GPU could not be queried.
     pub gpus: Vec<Option<GpuStatic>>,
     pub disks: Vec<DiskStatic>,
+    pub nets: Vec<NetStatic>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -140,6 +141,36 @@ pub struct CpuCache {
     pub l1_instruction: Option<Bytes>,
     pub l2: Option<Bytes>,
     pub l3: Option<Bytes>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum NetKind {
+    #[default]
+    Ethernet,
+    Wifi,
+}
+
+/// A physical network interface (not virtual ones such as docker0 or veth), e.g. `enp5s0`.
+#[derive(Debug, Default, Clone)]
+pub struct NetStatic {
+    pub id: Box<str>,
+    pub kind: NetKind,
+    pub mac: Option<Box<str>>,
+}
+
+/// Live numbers for the interface with the same `id` as a [`NetStatic`].
+#[derive(Debug, Default, Clone)]
+pub struct NetInfo {
+    pub id: Box<str>,
+    pub connected: bool,
+    /// Bytes per second since the previous scan; `None` on the very first scan.
+    pub receive_rate: Option<Bytes>,
+    pub send_rate: Option<Bytes>,
+    /// Negotiated link speed in bits per second, when the driver reports one.
+    pub link_speed: Option<u64>,
+    pub addresses: Vec<IpAddr>,
+    /// Wi-Fi signal strength in dBm.
+    pub signal_dbm: Option<i32>,
 }
 
 /// Live numbers for the disk with the same `id` as a [`DiskStatic`].
